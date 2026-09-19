@@ -231,7 +231,7 @@ with col_p1:
 with col_p2:
     st.subheader("Speeds & Maneuver")
     v_cruise = st.number_input("Cruise Speed (m/s)", step=0.5, key="v_cruise")
-    v_climb = st.number_input("Climb Speed (m/s)",tw step=0.5, key="v_climb")
+    v_climb = st.number_input("Climb Speed (m/s)", step=0.5, key="v_climb")
     climb_rate = st.number_input("Rate of Climb V_v (m/s)", step=0.5, key="climb_rate")
     n_turn = st.slider("Sustained Turn Load Factor n", 1.0, 2.5, step=0.05, key="n_turn")
 
