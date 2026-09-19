@@ -15,55 +15,70 @@ st.sidebar.header("Mass Buildup (Google Drive)")
 
 SHEET_ID = "1ksGFylLwYRefZ5e4smVkHqotms8hJYrnHfDF-Msib30"
 SHEET_GID = "2084851165"
-
 @st.cache_data(ttl=60)
 def load_and_clean_mass_table(sheet_id: str, gid: str):
     url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
-    
-    # Read raw data with no predefined header
     raw_df = pd.read_csv(url, header=None)
     
-    # 1. Find the header row by looking for a row containing 'Ürün' or 'Urun'
+    # 1. Başlık satırını bul
     header_idx = None
     for idx, row in raw_df.iterrows():
-        row_str = " ".join(row.dropna().astype(str).tolist()).lower()
-        if "ürün" in row_str or "urun" in row_str or "kategori" in row_str:
+        row_vals = [str(x).strip().lower() for x in row.dropna().tolist()]
+        if any("ürün" in v or "urun" in v or "kategori" in v for v in row_vals):
             header_idx = idx
             break
             
     if header_idx is None:
-        raise ValueError("Could not locate the table header row in the sheet.")
+        raise ValueError("Tablo başlık satırı bulunamadı.")
 
-    # Re-assign columns from that row and drop everything above it
+    # Başlıkları ata ve üstteki boş satırları at
     df = raw_df.iloc[header_idx + 1:].copy()
     df.columns = [str(c).strip() for c in raw_df.iloc[header_idx]]
-    
-    # Drop completely empty columns and rows
     df = df.dropna(how="all", axis=1).dropna(how="all", axis=0)
     
-    # 2. Normalize and identify critical columns dynamically
-    def find_col(patterns):
-        for c in df.columns:
-            c_clean = c.lower().replace(" ", "").replace("ı", "i").replace("ğ", "g")
-            for p in patterns:
-                if p in c_clean:
-                    return c
-        return None
+    # 2. Sütun isimlerini normalize eden yardımcı fonksiyon
+    def normalize_str(s):
+        return (
+            str(s)
+            .strip()
+            .lower()
+            .replace("ı", "i")
+            .replace("İ", "i")
+            .replace("ğ", "g")
+            .replace("ü", "u")
+            .replace("ş", "s")
+            .replace("ö", "o")
+            .replace("ç", "c")
+            .replace(" ", "")
+        )
 
-    urun_col = find_col(["urun", "item", "part"])
-    weight_col = find_col(["agirlik", "mass", "weight"])
-    x_col = find_col(["x(mm)", "x[mm]", "x_mm", "x"])
-    y_col = find_col(["y(mm)", "y[mm]", "y_mm", "y"])
-    z_col = find_col(["z(mm)", "z[mm]", "z_mm", "z"])
+    urun_col = None
+    weight_col = None
+    x_col = None
+    y_col = None
+    z_col = None
+
+    for col in df.columns:
+        norm = normalize_str(col)
+        if any(k in norm for k in ["urun", "item", "part"]):
+            urun_col = col
+        elif any(k in norm for k in ["agirlik", "mass", "weight"]):
+            weight_col = col
+        elif norm.startswith("x"):
+            x_col = col
+        elif norm.startswith("y"):
+            y_col = col
+        elif norm.startswith("z"):
+            z_col = col
 
     if not weight_col or not urun_col:
-        raise KeyError(f"Columns not identified. Found: {list(df.columns)}")
+        raise KeyError(f"Zorunlu sütunlar bulunamadı. Mevcut sütunlar: {list(df.columns)}")
 
-    # 3. Filter empty rows and summary rows ('Toplam', 'Total')
+    # 3. Boş satırları ve 'Toplam' satırını temizle
     df = df[df[urun_col].notna()]
     df = df[~df[urun_col].astype(str).str.contains("Toplam|Total", case=False)]
 
-    # 4. Standardize Turkish decimal separators (1.250,50 -> 1250.50)
+    # 4. Sayısal değerleri temizle (Türkçe virgül/nokta ayrımı)
     for col in [weight_col, x_col, y_col, z_col]:
         if col and col in df.columns:
             df[col] = (
@@ -71,12 +86,12 @@ def load_and_clean_mass_table(sheet_id: str, gid: str):
                 .astype(str)
                 .str.replace(".", "", regex=False)
                 .str.replace(",", ".", regex=False)
-                .str.extract(r"([-+]?\d*\.?\d+)", expand=False)  # Extracts valid numeric part
+                .str.extract(r"([-+]?\d*\.?\d+)", expand=False)
                 .astype(float)
             )
 
-    # Standardize column names internally so the rest of the script never breaks
-    rename_map = {urun_col: "Ürün", weight_col: "Ağırlık(gr)"}
+    # Standart sütun adlarına yeniden adlandır
+    rename_map = {urun_col: "Ağırlık(gr)" if urun_col == weight_col else "Ürün", weight_col: "Ağırlık(gr)"}
     if x_col: rename_map[x_col] = "X (mm)"
     if y_col: rename_map[y_col] = "Y (mm)"
     if z_col: rename_map[z_col] = "Z (mm)"
