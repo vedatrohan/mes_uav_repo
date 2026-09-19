@@ -4,12 +4,12 @@ import numpy as np
 import streamlit as st
 
 st.set_page_config(
-    page_title="Bilkent UAV Sizing Suite", layout="wide", page_icon="✈️"
+    page_title="Bilkent UAV Sizing Suite", layout="wide"
 )
 
-st.title("🛩️ Bilkent UAV Conceptual Sizing & Aero Synthesis")
+st.title("Bilkent UAV Conceptual Sizing & Aero Synthesis")
 st.caption(
-    "Interactive aircraft sizing loop: Mission Limits → Constraint Analysis → Wing & Taper → Tail → Drag Buildup."
+    "Interactive aircraft sizing loop: Mission Limits -> Constraint Analysis -> Wing & Taper -> Tail -> Drag Buildup."
 )
 
 # -------------------------------------------------------------
@@ -17,7 +17,7 @@ st.caption(
 # -------------------------------------------------------------
 st.header("1. Mission Profiles & Operational Constraints")
 
-with st.expander("⚙️ Mission Settings & Flight Phases", expanded=True):
+with st.expander("Mission Settings & Flight Phases", expanded=True):
     col_p1, col_p2, col_p3 = st.columns(3)
 
     with col_p1:
@@ -26,14 +26,14 @@ with st.expander("⚙️ Mission Settings & Flight Phases", expanded=True):
         v_to = st.number_input("Takeoff Speed V_TO (m/s)", value=11.0, step=0.5)
         s_g = st.number_input("Ground Run Limit S_g (m)", value=20.0, step=1.0)
         runway_friction = st.selectbox(
-            "Runway Type / Friction (μ)",
+            "Runway Type / Friction (mu)",
             options=[0.04, 0.08, 0.12, 0.20],
             index=1,
             format_func=lambda x: {
-                0.04: "Asphalt / Concrete (μ = 0.04)",
-                0.08: "Smooth / Cut Turf (μ = 0.08)",
-                0.12: "Standard Grass (μ = 0.12)",
-                0.20: "Tall Grass / Soft Field (μ = 0.20)",
+                0.04: "Asphalt / Concrete (mu = 0.04)",
+                0.08: "Smooth / Cut Turf (mu = 0.08)",
+                0.12: "Standard Grass (mu = 0.12)",
+                0.20: "Tall Grass / Soft Field (mu = 0.20)",
             }[x],
         )
 
@@ -49,7 +49,7 @@ with st.expander("⚙️ Mission Settings & Flight Phases", expanded=True):
         )
 
     with col_p3:
-        st.subheader("Approach, Stall & Atmosphere")
+        st.subheader("Approach & Environment")
         v_stall = st.number_input(
             "Max Stall Speed on Approach (m/s)", value=10.0, step=0.5
         )
@@ -57,7 +57,10 @@ with st.expander("⚙️ Mission Settings & Flight Phases", expanded=True):
             "Estimated CL_max (Clean/Approach)", value=1.4, step=0.05
         )
         rho = st.number_input(
-            "Air Density ρ (kg/m³)", value=1.225, format="%.3f"
+            "Air Density rho (kg/m^3)", value=1.225, format="%.3f"
+        )
+        g = st.number_input(
+            "Gravity g (m/s^2)", value=9.80665, format="%.5f"
         )
         cd0_active = st.number_input(
             "Parasite Drag CD0 (Estimated)", value=0.035, format="%.4f"
@@ -75,11 +78,14 @@ with col_ar:
     e0 = 1.14 - 0.0801 * (ar**0.68)
     k_factor = 1.0 / (math.pi * ar * e0)
     st.caption(
-        f"**Oswald Efficiency ($e_0$):** {e0:.3f}\n\n**Induced Drag Factor ($k$):** {k_factor:.4f}"
+        f"**Oswald Efficiency (e0):** {e0:.3f}\n\n**Induced Drag Factor (k):** {k_factor:.4f}"
     )
+    
+    st.markdown("---")
+    max_ws_plot = st.number_input("Plot Max W/S (kg/m^2)", value=16.0, step=1.0)
+    max_tw_plot = st.number_input("Plot Max T/W", value=1.2, step=0.1)
 
     # Dynamic pressures
-    g = 9.80665
     q_cruise = 0.5 * rho * (v_cruise**2)
     q_climb = 0.5 * rho * (v_climb**2)
     q_to_avg = 0.5 * rho * ((v_to / math.sqrt(2)) ** 2)
@@ -112,13 +118,13 @@ with col_ar:
     req_thrust_kgf = target_mtow * opt_tw
 
     st.success(f"**Governing Phase:** {governing_phase}")
-    st.metric("Optimal Wing Loading (W/S)", f"{opt_ws_kgm2:.2f} kg/m²")
+    st.metric("Optimal Wing Loading (W/S)", f"{opt_ws_kgm2:.2f} kg/m^2")
     st.metric("Minimum Thrust-to-Weight (T/W)", f"{opt_tw:.2f}")
-    st.metric("Required Wing Area (S)", f"{s_req:.3f} m²")
+    st.metric("Required Wing Area (S)", f"{s_req:.3f} m^2")
     st.metric("Static Thrust Target", f"{req_thrust_kgf:.2f} kgf")
 
 with col_plot:
-    ws_pa_range = np.linspace(1.0, 16.0 * g, 300)
+    ws_pa_range = np.linspace(1.0, max_ws_plot * g, 300)
     ws_kgm2_range = ws_pa_range / g
 
     tw_c_plot = (q_cruise * cd0_active / ws_pa_range) + (
@@ -166,14 +172,14 @@ with col_plot:
     ax.fill_between(
         ws_kgm2_range[feasible_mask],
         upper_bounds[feasible_mask],
-        1.2,
+        max_tw_plot,
         color="lightgray",
         alpha=0.4,
     )
 
-    ax.set_xlim(0, 16.0)
-    ax.set_ylim(0, 1.2)
-    ax.set_xlabel("Wing Loading W/S (kg/m²)")
+    ax.set_xlim(0, max_ws_plot)
+    ax.set_ylim(0, max_tw_plot)
+    ax.set_xlabel("Wing Loading W/S (kg/m^2)")
     ax.set_ylabel("Thrust-to-Weight Ratio T/W")
     ax.grid(True, linestyle="--", alpha=0.5)
     ax.legend(loc="upper right", fontsize=8.5)
@@ -190,20 +196,22 @@ col_w1, col_w2 = st.columns([1, 1])
 
 with col_w1:
     apply_taper = st.checkbox(
-        "Apply Wing Taper (λ < 1.0)?",
+        "Apply Wing Taper (lambda < 1.0)?",
         value=False,
-        help="Simplicity priority or short flight time suggests rectangular wing (no taper).",
     )
+    
+    nu_air = st.number_input("Kinematic Viscosity of Air (m^2/s)", value=1.48e-5, format="%.2e")
+    re_crit_tip = st.slider("Critical Tip Stall Reynolds Number", 50000, 200000, 100000, step=10000)
 
     if not apply_taper:
         lambda_val = 1.0
         c_root = s_req / wingspan_total
         c_tip = c_root
         mac = c_root
-        st.info("Using Rectangular Wing (Simple build, hot-wire friendly).")
+        st.info("Using Rectangular Wing.")
     else:
         lambda_val = st.slider(
-            "Taper Ratio λ (c_tip / c_root)", 0.5, 0.8, 0.65, step=0.05
+            "Taper Ratio lambda (c_tip / c_root)", 0.2, 1.0, 0.65, step=0.05
         )
         c_root = (2.0 / (1.0 + lambda_val)) * math.sqrt(s_req / ar)
         c_tip = lambda_val * c_root
@@ -214,7 +222,6 @@ with col_w1:
         )
 
     # Reynolds number evaluation
-    nu_air = 1.48e-5
     re_root = (v_cruise * c_root) / nu_air
     re_tip_stall = (v_stall * c_tip) / nu_air
 
@@ -227,14 +234,13 @@ with col_w2:
     m_col2.metric("Tip Chord (c_tip)", f"{c_tip*100:.1f} cm")
 
     st.write(
-        f"• **Cruise Re (Root):** {re_root:,.0f}\n\n• **Stall Re (Tip):** {re_tip_stall:,.0f}"
+        f"Cruise Re (Root): {re_root:,.0f}\n\nStall Re (Tip): {re_tip_stall:,.0f}"
     )
 
-    if apply_taper and re_tip_stall < 100000:
+    if apply_taper and re_tip_stall < re_crit_tip:
         st.error(
-            "⚠️ **Tip Stall Danger:** Tip Reynolds number at stall is below 100,000. "
-            "Flow will detach at wingtips first, causing violent roll stalls. "
-            "Increase tip chord or incorporate -1.5° to -2.0° negative washout twist."
+            f"Tip Stall Danger: Tip Reynolds number at stall is below the critical threshold of {re_crit_tip}. "
+            "Flow will detach at wingtips first. Increase tip chord or incorporate negative washout twist."
         )
 
 # -------------------------------------------------------------
@@ -242,10 +248,7 @@ with col_w2:
 # -------------------------------------------------------------
 st.header("4. Airfoil 2D Lift Translation")
 
-with st.expander("📊 3D to 2D Airfoil Coefficients", expanded=False):
-    st.caption(
-        "Convert 3D wing requirements into target 2D sectional lift (Cl) to search on AirfoilTools."
-    )
+with st.expander("3D to 2D Airfoil Coefficients", expanded=False):
     col_af1, col_af2 = st.columns(2)
 
     with col_af1:
@@ -266,14 +269,12 @@ with st.expander("📊 3D to 2D Airfoil Coefficients", expanded=False):
 
     with col_af2:
         st.markdown(
-            """
+            f"""
         **Profile Selection Recommendations:**
-        * Thickness range: $10\% \le t/c \le 14\%$ (for structural spar depth).
-        * Camber: $2\% \le c_m \le 4\%$ (Clark Y, Selig S1223, or NACA 2412).
-        * Look up polars around: $Re \\approx$ **{re:,.0f}**.
-        """.format(
-                re=re_root
-            )
+        * Thickness range: 10% <= t/c <= 14%
+        * Camber: 2% <= cm <= 4%
+        * Look up polars around: Re = {re_root:,.0f}.
+        """
         )
 
 # -------------------------------------------------------------
@@ -281,80 +282,93 @@ with st.expander("📊 3D to 2D Airfoil Coefficients", expanded=False):
 # -------------------------------------------------------------
 st.header("5. Empennage / Tail Surface Sizing")
 
-with st.expander("📐 Tail Moments & Areas", expanded=True):
+with st.expander("Tail Moments, Areas & Geometries", expanded=True):
     col_tl1, col_tl2 = st.columns(2)
 
     with col_tl1:
-        st.subheader("Horizontal Tail (Pitch Stability)")
-        l_h = st.slider(
-            "Horizontal Moment Arm l_H (m)", 0.40, 1.20, 0.65, step=0.05
-        )
-        v_h = st.slider(
-            "Volume Coefficient V_H",
-            0.40,
-            0.85,
-            0.60,
-            step=0.05,
-            help="Typical values: 0.50 - 0.70 for trainers/gliders",
-        )
+        st.subheader("Horizontal Tail")
+        l_h = st.slider("Horizontal Moment Arm l_H (m)", 0.40, 1.20, 0.65, step=0.05)
+        v_h = st.slider("Volume Coefficient V_H", 0.40, 0.85, 0.60, step=0.05)
+        ar_h = st.slider("Horiz. Tail AR", 3.0, 6.0, 4.0, step=0.1)
+        lam_h = st.slider("Horiz. Tail Taper lambda_h", 0.3, 1.0, 0.8, step=0.05)
+        
         s_h = (v_h * s_req * mac) / l_h
-        st.metric("Horizontal Tail Area (S_H)", f"{s_h*10000:.1f} cm²")
+        b_h = math.sqrt(ar_h * s_h)
+        c_root_h = (2.0 * s_h) / (b_h * (1.0 + lam_h))
+        c_tip_h = lam_h * c_root_h
+        
+        st.metric("Horizontal Tail Area (S_H)", f"{s_h:.3f} m^2")
+        st.write(f"Span (b_h): {b_h:.2f} m")
+        st.write(f"Root Chord (cr_h): {c_root_h*100:.1f} cm")
+        st.write(f"Tip Chord (ct_h): {c_tip_h*100:.1f} cm")
 
     with col_tl2:
-        st.subheader("Vertical Tail (Yaw Stability)")
-        l_v = st.slider(
-            "Vertical Moment Arm l_V (m)", 0.40, 1.20, 0.65, step=0.05
-        )
-        v_v = st.slider(
-            "Volume Coefficient V_V",
-            0.02,
-            0.06,
-            0.04,
-            step=0.005,
-            help="Typical values: 0.035 - 0.050",
-        )
+        st.subheader("Vertical Tail")
+        l_v = st.slider("Vertical Moment Arm l_V (m)", 0.40, 1.20, 0.65, step=0.05)
+        v_v = st.slider("Volume Coefficient V_V", 0.02, 0.06, 0.04, step=0.005)
+        ar_v = st.slider("Vert. Tail AR (h^2 / S_v)", 1.0, 3.0, 1.5, step=0.1)
+        lam_v = st.slider("Vert. Tail Taper lambda_v", 0.3, 1.0, 0.6, step=0.05)
+        
         s_v = (v_v * s_req * wingspan_total) / l_v
-        st.metric("Vertical Fin Area (S_V)", f"{s_v*10000:.1f} cm²")
+        h_v = math.sqrt(ar_v * s_v)
+        c_root_v = (2.0 * s_v) / (h_v * (1.0 + lam_v))
+        c_tip_v = lam_v * c_root_v
+        
+        st.metric("Vertical Fin Area (S_V)", f"{s_v:.3f} m^2")
+        st.write(f"Height (h_v): {h_v:.2f} m")
+        st.write(f"Root Chord (cr_v): {c_root_v*100:.1f} cm")
+        st.write(f"Tip Chord (ct_v): {c_tip_v*100:.1f} cm")
 
 # -------------------------------------------------------------
 # STAGE 6: DRAG BUILDUP FEEDBACK LOOP
 # -------------------------------------------------------------
 st.header("6. Component Drag Buildup & Loop Verification")
 
-with st.expander("🛠️ Fuselage & Gear Drag Assessment", expanded=False):
+with st.expander("Fuselage & Gear Drag Assessment", expanded=False):
     col_dg1, col_dg2 = st.columns(2)
 
     with col_dg1:
         fuse_len = st.number_input("Fuselage Length (m)", value=0.90, step=0.05)
-        fuse_dia = st.number_input(
-            "Fuselage Equivalent Diameter (m)", value=0.12, step=0.01
-        )
-        gear_type = st.selectbox(
-            "Landing Gear Configuration",
-            [
-                "No Gear (Bungee/Hand Launch) - 0.0",
-                "Round Wire Strut & Clean Wheels - 0.30",
-                "Flat Spring Aluminum Legs - 1.40",
-            ],
+        fuse_dia = st.number_input("Fuselage Equivalent Diameter (m)", value=0.12, step=0.01)
+        
+        # Approximate wetted area for a cylinder/box fuselage
+        s_wet_fuse = st.number_input("Fuselage Wetted Area S_wet (m^2)", value=(math.pi * fuse_dia * fuse_len * 0.8), format="%.3f")
+        cf_fuse = st.number_input("Fuselage Skin Friction Coefficient (Cf)", value=0.005, format="%.4f")
+        cd_wing_emp = st.number_input("Wing & Empennage Base Profile Drag", value=0.012, format="%.4f")
+
+        gear_cd_added = st.selectbox(
+            "Landing Gear Configuration (Added CD_gear)",
+            options=[0.000, 0.008, 0.015],
             index=1,
+            format_func=lambda x: {
+                0.000: "No Gear / Retracts (dCD = 0.000)",
+                0.008: "Streamlined Gear / Pants (dCD = 0.008)",
+                0.015: "Bare Wire/Spring & Wheels (dCD = 0.015)"
+            }[x]
         )
 
         fineness = fuse_len / fuse_dia
         form_factor = 1.0 + (60.0 / (fineness**3)) + (fineness / 400.0)
+        
+        # Calculate Drag Components
+        cd0_fuse = (cf_fuse * form_factor * s_wet_fuse) / s_req
+        total_recalc_cd0 = cd0_fuse + cd_wing_emp + gear_cd_added
 
     with col_dg2:
-        st.write(f"• **Fineness Ratio ($f$):** {fineness:.2f}")
-        st.write(f"• **Fuselage Form Factor ($FF$):** {form_factor:.3f}")
+        st.write(f"Fineness Ratio (f): {fineness:.2f}")
+        st.write(f"Fuselage Form Factor (FF): {form_factor:.3f}")
+        st.write("---")
+        st.write(f"Calculated Fuselage CD0: {cd0_fuse:.4f}")
+        st.write(f"Wing/Empennage CD0: {cd_wing_emp:.4f}")
+        st.write(f"Landing Gear CD0: {gear_cd_added:.4f}")
+        
+        st.metric("Re-calculated Total CD0", f"{total_recalc_cd0:.4f}")
 
-        recalc_cd0 = st.number_input(
-            "Updated Total CD0 from Buildup", value=0.0360, format="%.4f"
-        )
-
-        if abs(recalc_cd0 - cd0_active) > 0.003:
+        if abs(total_recalc_cd0 - cd0_active) > 0.003:
             st.warning(
-                f"⚠️ Iteration Discrepancy! Your re-calculated parasite drag ({recalc_cd0:.4f}) "
+                f"Iteration Discrepancy! Your re-calculated parasite drag ({total_recalc_cd0:.4f}) "
                 f"deviates from the assumption in Step 1 ({cd0_active:.4f}). "
                 "Update Step 1 Parasite Drag to re-close the synthesis loop."
             )
         else:
-            st.success("✅ Parasite drag assumption matches component buildup.")
+            st.success("Parasite drag assumption matches component buildup.")
