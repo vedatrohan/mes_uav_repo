@@ -58,6 +58,8 @@ with st.sidebar:
             except Exception:
                 st.error("Invalid JSON format.")
 
+def update_cd0_callback():
+    st.session_state.cd0_active = st.session_state.temp_recalc_cd0
 # -------------------------------------------------------------
 # STAGE 1: MISSION PROFILE & DESIGN LIMITS
 # -------------------------------------------------------------
@@ -315,7 +317,10 @@ with col_dg2:
     else:
         st.success("Parasite drag assumption matches component buildup.")
 
+st.session_state.temp_recalc_cd0 = float(total_recalc_cd0)
+
 st.markdown("---")
-if st.button("Update Stage 1 Drag Assumption and Recalculate"):
-    st.session_state.cd0_active = total_recalc_cd0
-    st.rerun()
+st.button(
+    "Update Stage 1 Drag Assumption and Recalculate",
+    on_click=update_cd0_callback
+)
