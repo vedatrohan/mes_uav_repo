@@ -19,31 +19,70 @@ SHEET_GID = "2084851165"
 @st.cache_data(ttl=60)
 def load_and_clean_mass_table(sheet_id: str, gid: str):
     url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
-    df = pd.read_csv(url)
     
-    # Strip whitespace from header strings
-    df.columns = [str(c).strip() for c in df.columns]
+    # Read raw data with no predefined header
+    raw_df = pd.read_csv(url, header=None)
     
-    # Locate product column
-    col_name = "Ürün" if "Ürün" in df.columns else df.columns[0]
+    # 1. Find the header row by looking for a row containing 'Ürün' or 'Urun'
+    header_idx = None
+    for idx, row in raw_df.iterrows():
+        row_str = " ".join(row.dropna().astype(str).tolist()).lower()
+        if "ürün" in row_str or "urun" in row_str or "kategori" in row_str:
+            header_idx = idx
+            break
+            
+    if header_idx is None:
+        raise ValueError("Could not locate the table header row in the sheet.")
+
+    # Re-assign columns from that row and drop everything above it
+    df = raw_df.iloc[header_idx + 1:].copy()
+    df.columns = [str(c).strip() for c in raw_df.iloc[header_idx]]
     
-    # Drop empty rows and summary 'Toplam'/'Total' rows
-    df = df[df[col_name].notna()]
-    df = df[~df[col_name].astype(str).str.contains("Toplam|Total", case=False)]
+    # Drop completely empty columns and rows
+    df = df.dropna(how="all", axis=1).dropna(how="all", axis=0)
     
-    # Parse numbers handling Turkish locale (dot for thousands, comma for decimals)
-    num_cols = ["Ağırlık(gr)", "X (mm)", "Y (mm)", "Z (mm)"]
-    for col in num_cols:
-        if col in df.columns:
+    # 2. Normalize and identify critical columns dynamically
+    def find_col(patterns):
+        for c in df.columns:
+            c_clean = c.lower().replace(" ", "").replace("ı", "i").replace("ğ", "g")
+            for p in patterns:
+                if p in c_clean:
+                    return c
+        return None
+
+    urun_col = find_col(["urun", "item", "part"])
+    weight_col = find_col(["agirlik", "mass", "weight"])
+    x_col = find_col(["x(mm)", "x[mm]", "x_mm", "x"])
+    y_col = find_col(["y(mm)", "y[mm]", "y_mm", "y"])
+    z_col = find_col(["z(mm)", "z[mm]", "z_mm", "z"])
+
+    if not weight_col or not urun_col:
+        raise KeyError(f"Columns not identified. Found: {list(df.columns)}")
+
+    # 3. Filter empty rows and summary rows ('Toplam', 'Total')
+    df = df[df[urun_col].notna()]
+    df = df[~df[urun_col].astype(str).str.contains("Toplam|Total", case=False)]
+
+    # 4. Standardize Turkish decimal separators (1.250,50 -> 1250.50)
+    for col in [weight_col, x_col, y_col, z_col]:
+        if col and col in df.columns:
             df[col] = (
                 df[col]
                 .astype(str)
                 .str.replace(".", "", regex=False)
                 .str.replace(",", ".", regex=False)
+                .str.extract(r"([-+]?\d*\.?\d+)", expand=False)  # Extracts valid numeric part
                 .astype(float)
             )
-    return df
 
+    # Standardize column names internally so the rest of the script never breaks
+    rename_map = {urun_col: "Ürün", weight_col: "Ağırlık(gr)"}
+    if x_col: rename_map[x_col] = "X (mm)"
+    if y_col: rename_map[y_col] = "Y (mm)"
+    if z_col: rename_map[z_col] = "Z (mm)"
+    df = df.rename(columns=rename_map)
+
+    return df
 # Default fallback values if sheet read fails
 live_mtow_kg = 3.0
 x_cg_mm = 400.0
