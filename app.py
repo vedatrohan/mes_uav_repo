@@ -361,7 +361,6 @@ with col_w2:
     sm1.metric("Wingspan (b)", f"{wingspan_total:.2f} m")
     sm1.metric("Mean Aero Chord (MAC)", f"{mac * 100:.1f} cm")
     sm2.metric("Wing Aerodynamic Center", f"{x_ac_wing:.1f} mm")
-    sm2.metric("Calculated Static Margin", f"{static_margin:.1f}% MAC")
 
     re_cruise = (rho * v_cruise * mac) / mu_air if mu_air > 0 else 0.0
     re_tip = (rho * v_cruise * c_tip) / mu_air if mu_air > 0 else 0.0
@@ -371,13 +370,6 @@ with col_w2:
 
     if re_tip < re_tip_threshold:
         st.warning(f"Flow Separation Risk: Tip Re ({re_tip:,.0f}) is below the {re_tip_threshold:,} threshold. Consider increasing tip chord or cruise speed.")
-
-    if static_margin < sm_min:
-        st.error(f"Stability Hazard: Static margin is {static_margin:.1f}%, below set threshold of {sm_min:.1f}%. Move mass forward or wing aft.")
-    elif static_margin > sm_max:
-        st.warning(f"Over-Stable / High Trim Drag: Static margin is {static_margin:.1f}%, above set threshold of {sm_max:.1f}%. Move mass aft or wing forward.")
-    else:
-        st.success(f"Stability Acceptable: Static margin is inside bounds ({sm_min:.1f}% - {sm_max:.1f}%).")
 
 # -------------------------------------------------------------
 # STAGE 4: GUST LOAD FACTOR VERIFICATION (FAR 23 / CS-VLA)
