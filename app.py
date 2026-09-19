@@ -5,7 +5,6 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-# MUST BE THE FIRST STREAMLIT COMMAND
 st.set_page_config(page_title="Bilkent UAV Sizing Suite", layout="wide")
 
 # -------------------------------------------------------------
@@ -15,12 +14,12 @@ st.sidebar.header("Mass Buildup (Google Drive)")
 
 SHEET_ID = "1ksGFylLwYRefZ5e4smVkHqotms8hJYrnHfDF-Msib30"
 SHEET_GID = "2084851165"
+
 @st.cache_data(ttl=60)
 def load_and_clean_mass_table(sheet_id: str, gid: str):
     url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
     raw_df = pd.read_csv(url, header=None)
     
-    # 1. Başlık satırını bul
     header_idx = None
     for idx, row in raw_df.iterrows():
         row_vals = [str(x).strip().lower() for x in row.dropna().tolist()]
@@ -31,32 +30,20 @@ def load_and_clean_mass_table(sheet_id: str, gid: str):
     if header_idx is None:
         raise ValueError("Tablo başlık satırı bulunamadı.")
 
-    # Başlıkları ata ve üstteki boş satırları at
     df = raw_df.iloc[header_idx + 1:].copy()
     df.columns = [str(c).strip() for c in raw_df.iloc[header_idx]]
     df = df.dropna(how="all", axis=1).dropna(how="all", axis=0)
     
-    # 2. Sütun isimlerini normalize eden yardımcı fonksiyon
     def normalize_str(s):
         return (
-            str(s)
-            .strip()
-            .lower()
-            .replace("ı", "i")
-            .replace("İ", "i")
-            .replace("ğ", "g")
-            .replace("ü", "u")
-            .replace("ş", "s")
-            .replace("ö", "o")
-            .replace("ç", "c")
-            .replace(" ", "")
+            str(s).strip().lower()
+            .replace("ı", "i").replace("İ", "i")
+            .replace("ğ", "g").replace("ü", "u")
+            .replace("ş", "s").replace("ö", "o")
+            .replace("ç", "c").replace(" ", "")
         )
 
-    urun_col = None
-    weight_col = None
-    x_col = None
-    y_col = None
-    z_col = None
+    urun_col, weight_col, x_col, y_col, z_col = None, None, None, None, None
 
     for col in df.columns:
         norm = normalize_str(col)
@@ -74,11 +61,9 @@ def load_and_clean_mass_table(sheet_id: str, gid: str):
     if not weight_col or not urun_col:
         raise KeyError(f"Zorunlu sütunlar bulunamadı. Mevcut sütunlar: {list(df.columns)}")
 
-    # 3. Boş satırları ve 'Toplam' satırını temizle
     df = df[df[urun_col].notna()]
     df = df[~df[urun_col].astype(str).str.contains("Toplam|Total", case=False)]
 
-    # 4. Sayısal değerleri temizle (Türkçe virgül/nokta ayrımı)
     for col in [weight_col, x_col, y_col, z_col]:
         if col and col in df.columns:
             df[col] = (
@@ -90,15 +75,14 @@ def load_and_clean_mass_table(sheet_id: str, gid: str):
                 .astype(float)
             )
 
-    # Standart sütun adlarına yeniden adlandır
-    rename_map = {urun_col: "Ağırlık(gr)" if urun_col == weight_col else "Ürün", weight_col: "Ağırlık(gr)"}
+    rename_map = {urun_col: "Ürün", weight_col: "Ağırlık(gr)"}
     if x_col: rename_map[x_col] = "X (mm)"
     if y_col: rename_map[y_col] = "Y (mm)"
     if z_col: rename_map[z_col] = "Z (mm)"
     df = df.rename(columns=rename_map)
 
     return df
-# Default fallback values if sheet read fails
+
 live_mtow_kg = 3.0
 x_cg_mm = 400.0
 use_live_sheet = False
@@ -108,7 +92,6 @@ try:
     total_mass_gr = df_mass["Ağırlık(gr)"].sum()
     live_mtow_kg = total_mass_gr / 1000.0
     
-    # Longitudinal CG (X = 0 at fuselage nose)
     total_moment_x = (df_mass["Ağırlık(gr)"] * df_mass["X (mm)"]).sum()
     x_cg_mm = total_moment_x / total_mass_gr
     
@@ -121,7 +104,7 @@ except Exception as e:
     st.sidebar.info("Falling back to manual weights.")
 
 # -------------------------------------------------------------
-# STATE MANAGEMENT & CONFIGURATION I/O
+# CONFIGURATION & STATE
 # -------------------------------------------------------------
 default_config = {
     "target_mtow": float(live_mtow_kg),
@@ -139,62 +122,49 @@ default_config = {
     "cd0_active": 0.035,
     "max_wind": 5.0,
     "wind_sf": 1.2,
-    "x_le_wing": 350.0
+    "x_le_wing": 350.0,
+    "eta_cruise": 0.72,
+    "eta_climb": 0.65,
+    "eta_to": 0.50,
+    "eta_motor_esc": 0.82,
+    "sm_min": 8.0,
+    "sm_max": 15.0
 }
 
 for key, val in default_config.items():
     if key not in st.session_state:
         st.session_state[key] = val
 
-# Sync live mass if connected and state not manually decoupled
 if use_live_sheet:
     st.session_state["target_mtow"] = float(live_mtow_kg)
 
-st.title("Bilkent UAV Conceptual Sizing & Aero Synthesis")
-st.caption("Interactive aircraft sizing loop: Mission Limits -> Constraint Analysis -> Wing & Taper -> CG Stability -> Tail -> Drag Buildup.")
+st.title("Bilkent UAV Conceptual Sizing Suite (P/W Analysis)")
+st.caption("Power-to-Weight Constraint Analysis with Dynamic Efficiencies and Center of Gravity Integration.")
 
 with st.sidebar:
-    st.header("Configuration Management")
-    
-    config_export = {k: st.session_state[k] for k in default_config.keys()}
-    st.download_button(
-        label="Download Mission Settings (JSON)",
-        data=json.dumps(config_export, indent=4),
-        file_name="uav_mission_config.json",
-        mime="application/json"
-    )
-    
+    st.header("Stability Margin Limits")
+    sm_min = st.slider("Minimum Static Margin (% MAC)", 0.0, 15.0, step=0.5, key="sm_min")
+    sm_max = st.slider("Maximum Static Margin (% MAC)", 15.0, 30.0, step=0.5, key="sm_max")
+
     st.markdown("---")
-    uploaded_file = st.file_uploader("Upload Settings (JSON)", type=["json"])
-    if uploaded_file is not None:
-        if st.button("Apply Uploaded Config"):
-            try:
-                new_config = json.load(uploaded_file)
-                for k in default_config.keys():
-                    if k in new_config:
-                        st.session_state[k] = new_config[k]
-                st.rerun()
-            except Exception:
-                st.error("Invalid JSON format.")
+    st.header("Powertrain Efficiencies")
+    eta_cruise = st.slider("Cruise Propeller Efficiency", 0.50, 0.85, step=0.01, key="eta_cruise")
+    eta_climb = st.slider("Climb Propeller Efficiency", 0.45, 0.80, step=0.01, key="eta_climb")
+    eta_to = st.slider("Takeoff Avg Propeller Efficiency", 0.35, 0.65, step=0.01, key="eta_to")
+    eta_motor_esc = st.slider("Motor & ESC Efficiency", 0.70, 0.95, step=0.01, key="eta_motor_esc")
 
 def update_cd0_callback():
     st.session_state.cd0_active = st.session_state.temp_recalc_cd0
 
 # -------------------------------------------------------------
-# STAGE 1: MISSION PROFILE & DESIGN LIMITS
+# STAGE 1: MISSION PROFILE
 # -------------------------------------------------------------
-st.header("1. Mission Profiles & Operational Constraints")
-
+st.header("1. Mission Profiles & Flight Parameters")
 col_p1, col_p2, col_p3 = st.columns(3)
 
 with col_p1:
     st.subheader("Takeoff & Surface")
-    target_mtow = st.number_input(
-        "Target MTOW (kg)", 
-        step=0.1, 
-        key="target_mtow",
-        help="Derived automatically from Google Sheets if connected."
-    )
+    target_mtow = st.number_input("Target MTOW (kg)", step=0.1, key="target_mtow")
     v_to = st.number_input("Takeoff Speed V_TO (m/s)", step=0.5, key="v_to")
     s_g = st.number_input("Ground Run Limit S_g (m)", step=1.0, key="s_g")
     
@@ -213,269 +183,203 @@ with col_p1:
     runway_friction = friction_options[st.session_state.runway_friction_idx]
 
 with col_p2:
-    st.subheader("Cruise, Climb & Wind")
+    st.subheader("Speeds & Maneuver")
     v_cruise = st.number_input("Cruise Speed (m/s)", step=0.5, key="v_cruise")
     v_climb = st.number_input("Climb Speed (m/s)", step=0.5, key="v_climb")
     climb_rate = st.number_input("Rate of Climb V_v (m/s)", step=0.5, key="climb_rate")
     n_turn = st.slider("Sustained Turn Load Factor n", 1.0, 2.5, step=0.05, key="n_turn")
-    st.markdown("---")
-    max_wind = st.number_input("Max Gust / Wind Speed (m/s)", step=0.5, key="max_wind")
-    wind_sf = st.number_input("Wind Safety Factor", step=0.1, key="wind_sf")
 
 with col_p3:
-    st.subheader("Approach & Environment")
-    v_stall = st.number_input("Max Stall Speed on Approach (m/s)", step=0.5, key="v_stall")
-    cl_max_est = st.number_input("Estimated CL_max (Clean/Approach)", step=0.05, key="cl_max_est")
-    rho = st.number_input("Air Density rho (kg/m^3)", format="%.3f", key="rho")
+    st.subheader("Atmosphere & Aero Limits")
+    v_stall = st.number_input("Stall Speed V_s (m/s)", step=0.5, key="v_stall")
+    cl_max_est = st.number_input("Estimated CL_max", step=0.05, key="cl_max_est")
+    rho = st.number_input("Density rho (kg/m^3)", format="%.3f", key="rho")
     g = st.number_input("Gravity g (m/s^2)", format="%.5f", key="g")
-    cd0_active = st.number_input("Parasite Drag CD0 (Estimated)", format="%.4f", key="cd0_active")
-
-# Wind Penetration Check
-wind_margin = v_cruise - (max_wind * wind_sf)
-if wind_margin <= v_stall:
-    st.error(f"Wind Penetration Warning: Cruise speed ({v_cruise} m/s) minus factored wind ({max_wind * wind_sf:.1f} m/s) is {wind_margin:.1f} m/s. This is below or equal to the stall speed ({v_stall} m/s). The aircraft risks stalling or flying backward relative to the ground during gusts.")
-else:
-    st.success(f"Wind Penetration Pass: Factored margin ({wind_margin:.1f} m/s) clears stall speed.")
+    cd0_active = st.number_input("Parasite Drag CD0", format="%.4f", key="cd0_active")
 
 # -------------------------------------------------------------
-# STAGE 2: CONSTRAINT ANALYSIS ENGINE
+# STAGE 2: P/W CONSTRAINT ANALYSIS
 # -------------------------------------------------------------
-st.header("2. Master Constraint Analysis")
+st.header("2. Master Constraint Analysis (Power-to-Weight)")
 
 col_ar, col_plot = st.columns([1, 2])
 
 with col_ar:
-    ar = st.slider("Wing Aspect Ratio (AR)", 4.0, 12.0, 7.0, step=0.5)
+    ar = st.slider("Aspect Ratio (AR)", 4.0, 12.0, 7.0, step=0.5)
     e0 = 1.14 - 0.0801 * (ar**0.68)
     k_factor = 1.0 / (math.pi * ar * e0)
-    st.caption(f"Oswald Efficiency (e0): {e0:.3f} | Induced Drag Factor (k): {k_factor:.4f}")
     
-    st.markdown("---")
     max_ws_plot = st.number_input("Plot Max W/S (kg/m^2)", value=16.0, step=1.0)
-    max_tw_plot = st.number_input("Plot Max T/W", value=1.2, step=0.1)
+    max_pw_plot = st.number_input("Plot Max P/W (W/kg)", value=350.0, step=25.0)
 
     q_cruise = 0.5 * rho * (v_cruise**2)
     q_climb = 0.5 * rho * (v_climb**2)
-    q_to_avg = 0.5 * rho * ((v_to / math.sqrt(2)) ** 2)
+    v_to_avg = v_to / math.sqrt(2)
+    q_to_avg = 0.5 * rho * (v_to_avg**2)
     q_stall = 0.5 * rho * (v_stall**2)
 
     ws_crit_pa = q_stall * cl_max_est
     opt_ws_kgm2 = ws_crit_pa / g
 
-    tw_crit = {
-        "Cruise": (q_cruise * cd0_active / ws_crit_pa) + (k_factor * ws_crit_pa / q_cruise),
-        "Climb": (climb_rate / v_climb) + (q_climb * cd0_active / ws_crit_pa) + (k_factor * ws_crit_pa / q_climb),
-        "Turn": q_cruise * ((cd0_active / ws_crit_pa) + ws_crit_pa * k_factor * ((n_turn / q_cruise) ** 2)),
-        "Takeoff Ground Run": (v_to**2) / (2 * g * s_g) + (q_to_avg * 0.05 / ws_crit_pa) + runway_friction * (1.0 - (q_to_avg * 0.6 / ws_crit_pa)),
+    # Aerodynamic T/W requirements
+    tw_cruise = (q_cruise * cd0_active / ws_crit_pa) + (k_factor * ws_crit_pa / q_cruise)
+    tw_climb = (climb_rate / v_climb) + (q_climb * cd0_active / ws_crit_pa) + (k_factor * ws_crit_pa / q_climb)
+    tw_turn = q_cruise * ((cd0_active / ws_crit_pa) + ws_crit_pa * k_factor * ((n_turn / q_cruise)**2))
+    tw_to = ((v_to**2) / (2 * g * s_g)) + (q_to_avg * 0.05 / ws_crit_pa) + runway_friction * (1.0 - (q_to_avg * 0.6 / ws_crit_pa))
+
+    # Convert to Electrical Power-to-Weight (W/kg)
+    # P_elec/m = (T/W) * g * V / (eta_prop * eta_motor_esc)
+    pw_crit = {
+        "Cruise": (tw_cruise * g * v_cruise) / (eta_cruise * eta_motor_esc),
+        "Climb": (tw_climb * g * v_climb) / (eta_climb * eta_motor_esc),
+        "Turn": (tw_turn * g * v_cruise) / (eta_cruise * eta_motor_esc),
+        "Takeoff Ground Run": (tw_to * g * v_to_avg) / (eta_to * eta_motor_esc)
     }
-    
-    governing_phase = max(tw_crit, key=tw_crit.get)
-    opt_tw = tw_crit[governing_phase]
+
+    governing_phase = max(pw_crit, key=pw_crit.get)
+    opt_pw = pw_crit[governing_phase]
     s_req = target_mtow / opt_ws_kgm2
-    req_thrust_kgf = target_mtow * opt_tw
+    total_power_req_w = target_mtow * opt_pw
 
     st.metric("Optimal Wing Loading (W/S)", f"{opt_ws_kgm2:.2f} kg/m^2")
-    st.metric("Minimum Thrust-to-Weight (T/W)", f"{opt_tw:.2f}")
+    st.metric("Governing Sizing Phase", governing_phase)
+    st.metric("Minimum Electrical P/W", f"{opt_pw:.1f} W/kg")
+    st.metric("Required Electrical Power", f"{total_power_req_w:.1f} W")
     st.metric("Required Wing Area (S)", f"{s_req:.3f} m^2")
-    st.metric("Static Thrust Target", f"{req_thrust_kgf:.2f} kgf")
 
 with col_plot:
     ws_pa_range = np.linspace(1.0, max_ws_plot * g, 300)
     ws_kgm2_range = ws_pa_range / g
 
-    tw_c_plot = (q_cruise * cd0_active / ws_pa_range) + (k_factor * ws_pa_range / q_cruise)
-    tw_cl_plot = ((climb_rate / v_climb) + (q_climb * cd0_active / ws_pa_range) + (k_factor * ws_pa_range / q_climb))
-    tw_t_plot = q_cruise * ((cd0_active / ws_pa_range) + ws_pa_range * k_factor * ((n_turn / q_cruise) ** 2))
-    tw_to_plot = ((v_to**2) / (2 * g * s_g) + (q_to_avg * 0.05 / ws_pa_range) + runway_friction * (1.0 - (q_to_avg * 0.6 / ws_pa_range)))
+    tw_c = (q_cruise * cd0_active / ws_pa_range) + (k_factor * ws_pa_range / q_cruise)
+    tw_cl = (climb_rate / v_climb) + (q_climb * cd0_active / ws_pa_range) + (k_factor * ws_pa_range / q_climb)
+    tw_t = q_cruise * ((cd0_active / ws_pa_range) + ws_pa_range * k_factor * ((n_turn / q_cruise)**2))
+    tw_to_curve = ((v_to**2) / (2 * g * s_g)) + (q_to_avg * 0.05 / ws_pa_range) + runway_friction * (1.0 - (q_to_avg * 0.6 / ws_pa_range))
+
+    pw_c = (tw_c * g * v_cruise) / (eta_cruise * eta_motor_esc)
+    pw_cl = (tw_cl * g * v_climb) / (eta_climb * eta_motor_esc)
+    pw_t = (tw_t * g * v_cruise) / (eta_cruise * eta_motor_esc)
+    pw_to_curve = (tw_to_curve * g * v_to_avg) / (eta_to * eta_motor_esc)
 
     fig, ax = plt.subplots(figsize=(7, 4.5), dpi=100)
-    ax.plot(ws_kgm2_range, tw_c_plot, label="Cruise", color="crimson")
-    ax.plot(ws_kgm2_range, tw_cl_plot, label="Climb", color="royalblue")
-    ax.plot(ws_kgm2_range, tw_t_plot, label="Turn", color="purple")
-    ax.plot(ws_kgm2_range, tw_to_plot, label="Takeoff", color="forestgreen")
+    ax.plot(ws_kgm2_range, pw_c, label="Cruise", color="crimson")
+    ax.plot(ws_kgm2_range, pw_cl, label="Climb", color="royalblue")
+    ax.plot(ws_kgm2_range, pw_t, label="Turn", color="purple")
+    ax.plot(ws_kgm2_range, pw_to_curve, label="Takeoff", color="forestgreen")
     ax.axvline(x=opt_ws_kgm2, label="Stall Limit", color="black", linestyle="--", lw=1.5)
-    ax.plot(opt_ws_kgm2, opt_tw, "ro", markersize=8, label=f"Design Point ({opt_ws_kgm2:.2f}, {opt_tw:.2f})")
+    ax.plot(opt_ws_kgm2, opt_pw, "ro", markersize=8, label=f"Design Point ({opt_ws_kgm2:.2f}, {opt_pw:.1f})")
 
-    upper_bounds = np.maximum.reduce([tw_c_plot, tw_cl_plot, tw_t_plot, tw_to_plot])
+    upper_pw = np.maximum.reduce([pw_c, pw_cl, pw_t, pw_to_curve])
     feasible_mask = ws_kgm2_range <= opt_ws_kgm2
-    ax.fill_between(ws_kgm2_range[feasible_mask], upper_bounds[feasible_mask], max_tw_plot, color="lightgray", alpha=0.4)
+    ax.fill_between(ws_kgm2_range[feasible_mask], upper_pw[feasible_mask], max_pw_plot, color="lightgray", alpha=0.4)
 
     ax.set_xlim(0, max_ws_plot)
-    ax.set_ylim(0, max_tw_plot)
+    ax.set_ylim(0, max_pw_plot)
     ax.set_xlabel("Wing Loading W/S (kg/m^2)")
-    ax.set_ylabel("Thrust-to-Weight Ratio T/W")
+    ax.set_ylabel("Electrical Power Loading P/W (W/kg)")
     ax.grid(True, linestyle="--", alpha=0.5)
-    ax.legend(loc="upper right", fontsize=8.5)
+    ax.legend(loc="upper right", fontsize=8.0)
     st.pyplot(fig)
 
 # -------------------------------------------------------------
-# STAGE 3: WING SIZING & STATIC MARGIN CHECKPOINT
+# STAGE 3: WING SIZING & CUSTOM STATIC MARGIN CHECK
 # -------------------------------------------------------------
-st.header("3. Wing Geometry & Longitudinal Stability")
+st.header("3. Wing Sizing & Longitudinal Stability")
 wingspan_total = math.sqrt(ar * s_req)
 
-col_w1, col_w2 = st.columns([1, 1])
+col_w1, col_w2 = st.columns(2)
 
 with col_w1:
     apply_taper = st.checkbox("Apply Wing Taper (lambda < 1.0)?", value=False)
-    nu_air = st.number_input("Kinematic Viscosity of Air (m^2/s)", value=1.48e-5, format="%.2e")
-    re_crit_tip = st.slider("Critical Tip Stall Reynolds Number", 50000, 200000, 100000, step=10000)
-
     if not apply_taper:
         lambda_val = 1.0
         c_root = s_req / wingspan_total
         c_tip = c_root
         mac = c_root
-        st.info("Using Rectangular Wing.")
     else:
         lambda_val = st.slider("Taper Ratio lambda (c_tip / c_root)", 0.2, 1.0, 0.65, step=0.05)
         c_root = (2.0 / (1.0 + lambda_val)) * math.sqrt(s_req / ar)
         c_tip = lambda_val * c_root
         mac = (2.0 / 3.0) * c_root * ((1.0 + lambda_val + lambda_val**2) / (1.0 + lambda_val))
 
-    re_root = (v_cruise * c_root) / nu_air
-    re_tip_stall = (v_stall * c_tip) / nu_air
-
-with col_w2:
-    st.write("Calculated Wing Metrics:")
-    m_col1, m_col2 = st.columns(2)
-    m_col1.metric("Wingspan (b)", f"{wingspan_total:.2f} m")
-    m_col1.metric("Root Chord (c_root)", f"{c_root*100:.1f} cm")
-    m_col2.metric("Mean Aero Chord (MAC)", f"{mac*100:.1f} cm")
-    m_col2.metric("Tip Chord (c_tip)", f"{c_tip*100:.1f} cm")
-
-    st.write(f"Cruise Re (Root): {re_root:,.0f} | Stall Re (Tip): {re_tip_stall:,.0f}")
-
-    if apply_taper and re_tip_stall < re_crit_tip:
-        st.error(f"Tip Stall Danger: Tip Reynolds number at stall ({re_tip_stall:,.0f}) is below the critical threshold of {re_crit_tip}. Flow will detach at wingtips first. Increase tip chord or incorporate negative washout twist.")
-
-st.markdown("---")
-st.subheader("Center of Gravity & Longitudinal Stability (Static Margin)")
-
-col_cg1, col_cg2 = st.columns(2)
-
-with col_cg1:
-    x_le_wing = st.number_input(
-        "Wing Leading Edge Location from Nose X_LE (mm)", 
-        step=10.0,
-        key="x_le_wing"
-    )
-    # Wing Aerodynamic Center placed at 25% MAC
+    x_le_wing = st.number_input("Wing Leading Edge Location from Nose X_LE (mm)", step=10.0, key="x_le_wing")
     x_ac_wing = x_le_wing + (0.25 * mac * 1000.0)
-    
-    # Static Margin calculation: (X_ac - X_cg) / MAC * 100
     static_margin = ((x_ac_wing - x_cg_mm) / (mac * 1000.0)) * 100.0
 
-with col_cg2:
-    sm_col1, sm_col2 = st.columns(2)
-    sm_col1.metric("Current CG (from Nose)", f"{x_cg_mm:.1f} mm")
-    sm_col1.metric("Wing AC (X_AC)", f"{x_ac_wing:.1f} mm")
-    sm_col2.metric("Static Margin", f"{static_margin:.1f}% MAC")
+with col_w2:
+    st.write("Calculated Metrics:")
+    sm1, sm2 = st.columns(2)
+    sm1.metric("Wingspan (b)", f"{wingspan_total:.2f} m")
+    sm1.metric("Mean Aero Chord (MAC)", f"{mac*100:.1f} cm")
+    sm2.metric("Wing Aerodynamic Center", f"{x_ac_wing:.1f} mm")
+    sm2.metric("Calculated Static Margin", f"{static_margin:.1f}% MAC")
 
-    if static_margin < 5.0:
-        st.error(f"Stability Hazard: Static margin is {static_margin:.1f}% (< 5%). Aircraft is neutral or unstable. Shift internal components forward or shift wing location aft.")
-    elif static_margin > 20.0:
-        st.warning(f"Excessive Nose-Heavy Trim: Static margin is {static_margin:.1f}% (> 20%). Elevators will require large trim angles, causing severe trim drag.")
+    # Evaluation using user-defined criteria
+    if static_margin < sm_min:
+        st.error(f"Stability Hazard: Static margin is {static_margin:.1f}%, below your set limit of {sm_min:.1f}%. Move mass forward or wing aft.")
+    elif static_margin > sm_max:
+        st.warning(f"Over-Stable / High Trim Drag: Static margin is {static_margin:.1f}%, above your set limit of {sm_max:.1f}%. Move mass aft or wing forward.")
     else:
-        st.success(f"Stability Optimal: Static margin {static_margin:.1f}% MAC sits inside the target envelope (5% - 20%).")
+        st.success(f"Stability Acceptable: Static margin is inside your bounds ({sm_min:.1f}% - {sm_max:.1f}%).")
 
 # -------------------------------------------------------------
-# STAGE 4: AIRFOIL SELECTION CHECKPOINT
+# STAGE 4: AIRFOIL TRANSLATION
 # -------------------------------------------------------------
-st.header("4. Airfoil 2D Lift Translation")
-
+st.header("4. Airfoil 2D Lift Requirements")
 cl_3d_cruise = (2.0 * target_mtow * g) / (rho * (v_cruise**2) * s_req)
 cl_2d_cruise = cl_3d_cruise / (1.0 - (cl_3d_cruise / (math.pi * ar * e0)))
 cl_2d_stall = cl_max_est / (1.0 - (cl_max_est / (math.pi * ar * e0)))
 
-col_af1, col_af2, col_af3 = st.columns(3)
-col_af1.metric("Target 3D Wing CL (Cruise)", f"{cl_3d_cruise:.3f}")
-col_af2.metric("Target 2D Airfoil Cl (Cruise)", f"{cl_2d_cruise:.3f}")
-col_af3.metric("Target 2D Airfoil Cl_max", f"{cl_2d_stall:.3f}")
+af1, af2, af3 = st.columns(3)
+af1.metric("Target 3D Cruise CL", f"{cl_3d_cruise:.3f}")
+af2.metric("Target 2D Airfoil Cl (Cruise)", f"{cl_2d_cruise:.3f}")
+af3.metric("Target 2D Airfoil Cl_max", f"{cl_2d_stall:.3f}")
 
 # -------------------------------------------------------------
-# STAGE 5: TAIL SIZING (VOLUME COEFFICIENTS)
+# STAGE 5: TAIL SIZING
 # -------------------------------------------------------------
-st.header("5. Empennage / Tail Surface Sizing")
+st.header("5. Empennage Sizing")
+tl1, tl2 = st.columns(2)
 
-col_tl1, col_tl2 = st.columns(2)
-with col_tl1:
+with tl1:
     st.subheader("Horizontal Tail")
     l_h = st.slider("Horizontal Moment Arm l_H (m)", 0.40, 1.20, 0.65, step=0.05)
     v_h = st.slider("Volume Coefficient V_H", 0.40, 0.85, 0.60, step=0.05)
-    ar_h = st.slider("Horiz. Tail AR", 3.0, 6.0, 4.0, step=0.1)
-    lam_h = st.slider("Horiz. Tail Taper lambda_h", 0.3, 1.0, 0.8, step=0.05)
-    
     s_h = (v_h * s_req * mac) / l_h
-    b_h = math.sqrt(ar_h * s_h)
-    c_root_h = (2.0 * s_h) / (b_h * (1.0 + lam_h))
-    
     st.metric("Horizontal Tail Area (S_H)", f"{s_h:.3f} m^2")
-    st.write(f"Span (b_h): {b_h:.2f} m | Root Chord (cr_h): {c_root_h*100:.1f} cm | Tip Chord: {lam_h*c_root_h*100:.1f} cm")
 
-with col_tl2:
+with tl2:
     st.subheader("Vertical Tail")
     l_v = st.slider("Vertical Moment Arm l_V (m)", 0.40, 1.20, 0.65, step=0.05)
     v_v = st.slider("Volume Coefficient V_V", 0.02, 0.06, 0.04, step=0.005)
-    ar_v = st.slider("Vert. Tail AR", 1.0, 3.0, 1.5, step=0.1)
-    lam_v = st.slider("Vert. Tail Taper lambda_v", 0.3, 1.0, 0.6, step=0.05)
-    
     s_v = (v_v * s_req * wingspan_total) / l_v
-    h_v = math.sqrt(ar_v * s_v)
-    c_root_v = (2.0 * s_v) / (h_v * (1.0 + lam_v))
-    
     st.metric("Vertical Fin Area (S_V)", f"{s_v:.3f} m^2")
-    st.write(f"Height (h_v): {h_v:.2f} m | Root Chord (cr_v): {c_root_v*100:.1f} cm | Tip Chord: {lam_v*c_root_v*100:.1f} cm")
 
 # -------------------------------------------------------------
-# STAGE 6: DRAG BUILDUP FEEDBACK LOOP
+# STAGE 6: DRAG BUILDUP FEEDBACK
 # -------------------------------------------------------------
-st.header("6. Component Drag Buildup & Loop Verification")
+st.header("6. Drag Buildup Verification")
+dg1, dg2 = st.columns(2)
 
-col_dg1, col_dg2 = st.columns(2)
-
-with col_dg1:
+with dg1:
     fuse_len = st.number_input("Fuselage Length (m)", value=0.90, step=0.05)
     fuse_dia = st.number_input("Fuselage Equivalent Diameter (m)", value=0.12, step=0.01)
-    s_wet_fuse = st.number_input("Fuselage Wetted Area S_wet (m^2)", value=(math.pi * fuse_dia * fuse_len * 0.8), format="%.3f")
-    cf_fuse = st.number_input("Fuselage Skin Friction Coefficient (Cf)", value=0.005, format="%.4f")
-    cd_wing_emp = st.number_input("Wing & Empennage Base Profile Drag", value=0.012, format="%.4f")
-
-    gear_cd_added = st.selectbox(
-        "Landing Gear Configuration (Added CD_gear)",
-        options=[0.000, 0.008, 0.015],
-        index=1,
-        format_func=lambda x: {
-            0.000: "No Gear / Retracts (dCD = 0.000)",
-            0.008: "Streamlined Gear / Pants (dCD = 0.008)",
-            0.015: "Bare Wire/Spring & Wheels (dCD = 0.015)"
-        }[x]
-    )
+    s_wet_fuse = math.pi * fuse_dia * fuse_len * 0.8
+    cf_fuse = st.number_input("Skin Friction Cf", value=0.005, format="%.4f")
+    cd_wing_emp = st.number_input("Wing & Tail Profile Drag", value=0.012, format="%.4f")
+    gear_cd = st.selectbox("Landing Gear Drag", [0.000, 0.008, 0.015], index=1)
 
     fineness = fuse_len / fuse_dia
     form_factor = 1.0 + (60.0 / (fineness**3)) + (fineness / 400.0)
     cd0_fuse = (cf_fuse * form_factor * s_wet_fuse) / s_req
-    total_recalc_cd0 = cd0_fuse + cd_wing_emp + gear_cd_added
+    total_recalc_cd0 = cd0_fuse + cd_wing_emp + gear_cd
 
-with col_dg2:
-    st.write(f"Fineness Ratio (f): {fineness:.2f}")
-    st.write(f"Fuselage Form Factor (FF): {form_factor:.3f}")
-    st.markdown("---")
-    st.write(f"Calculated Fuselage CD0: {cd0_fuse:.4f}")
-    st.write(f"Wing/Empennage CD0: {cd_wing_emp:.4f}")
-    st.write(f"Landing Gear CD0: {gear_cd_added:.4f}")
-    
-    st.metric("Re-calculated Total CD0", f"{total_recalc_cd0:.4f}")
-
+with dg2:
+    st.metric("Recalculated CD0", f"{total_recalc_cd0:.4f}")
     if abs(total_recalc_cd0 - st.session_state.cd0_active) > 0.003:
-        st.warning(f"Iteration Discrepancy: Your re-calculated parasite drag ({total_recalc_cd0:.4f}) deviates from the assumption in Stage 1 ({st.session_state.cd0_active:.4f}).")
+        st.warning(f"Drag mismatch: Initial {st.session_state.cd0_active:.4f} vs Buildup {total_recalc_cd0:.4f}")
     else:
-        st.success("Parasite drag assumption matches component buildup.")
+        st.success("Drag assumption aligns with geometry.")
 
 st.session_state.temp_recalc_cd0 = float(total_recalc_cd0)
-
-st.markdown("---")
-st.button(
-    "Update Stage 1 Drag Assumption and Recalculate",
-    on_click=update_cd0_callback
-)
+st.button("Update Stage 1 Drag Assumption and Recalculate", on_click=update_cd0_callback)
