@@ -231,7 +231,7 @@ with col_p1:
 with col_p2:
     st.subheader("Speeds & Maneuver")
     v_cruise = st.number_input("Cruise Speed (m/s)", step=0.5, key="v_cruise")
-    v_climb = st.number_input("Climb Speed (m/s)", step=0.5, key="v_climb")
+    v_climb = st.number_input("Climb Speed (m/s)",tw step=0.5, key="v_climb")
     climb_rate = st.number_input("Rate of Climb V_v (m/s)", step=0.5, key="climb_rate")
     n_turn = st.slider("Sustained Turn Load Factor n", 1.0, 2.5, step=0.05, key="n_turn")
 
@@ -243,6 +243,8 @@ with col_p3:
     mu_air = st.number_input("Dynamic Viscosity mu (kg/(m*s))", format="%.3e", key="mu_air")
     g = st.number_input("Gravity g (m/s^2)", format="%.5f", key="g")
     cd0_active = st.number_input("Parasite Drag CD0", format="%.4f", key="cd0_active")
+    cd_to = st.number_input("Takeoff CD (CD_to)", value=0.050, step=0.005, format="%.3f", key="cd_to")
+    cl_to = st.number_input("Takeoff CL (CL_to)", value=0.60, step=0.05, key="cl_to")
 
 # -------------------------------------------------------------
 # STAGE 2: P/W CONSTRAINT ANALYSIS
@@ -271,7 +273,7 @@ with col_ar:
     tw_cruise = (q_cruise * cd0_active / ws_crit_pa) + (k_factor * ws_crit_pa / q_cruise)
     tw_climb = (climb_rate / v_climb) + (q_climb * cd0_active / ws_crit_pa) + (k_factor * ws_crit_pa / q_climb)
     tw_turn = q_cruise * ((cd0_active / ws_crit_pa) + ws_crit_pa * k_factor * ((n_turn / q_cruise)**2))
-    tw_to = ((v_to**2) / (2 * g * s_g)) + (q_to_avg * 0.05 / ws_crit_pa) + runway_friction * (1.0 - (q_to_avg * 0.6 / ws_crit_pa))
+    tw_to = ((v_to**2) / (2 * g * s_g)) + (q_to_avg * cd_to / ws_crit_pa) + runway_friction * (1.0 - (q_to_avg * cl_to / ws_crit_pa))
 
     pw_crit = {
         "Cruise": (tw_cruise * g * v_cruise) / (eta_cruise * eta_motor_esc),
@@ -298,7 +300,7 @@ with col_plot:
     tw_c = (q_cruise * cd0_active / ws_pa_range) + (k_factor * ws_pa_range / q_cruise)
     tw_cl = (climb_rate / v_climb) + (q_climb * cd0_active / ws_pa_range) + (k_factor * ws_pa_range / q_climb)
     tw_t = q_cruise * ((cd0_active / ws_pa_range) + ws_pa_range * k_factor * ((n_turn / q_cruise)**2))
-    tw_to_curve = ((v_to**2) / (2 * g * s_g)) + (q_to_avg * 0.05 / ws_pa_range) + runway_friction * (1.0 - (q_to_avg * 0.6 / ws_pa_range))
+    tw_to_curve = ((v_to**2) / (2 * g * s_g)) + (q_to_avg * cd_to / ws_pa_range) + runway_friction * (1.0 - (q_to_avg * cl_to / ws_pa_range))
 
     pw_c = (tw_c * g * v_cruise) / (eta_cruise * eta_motor_esc)
     pw_cl = (tw_cl * g * v_climb) / (eta_climb * eta_motor_esc)
@@ -463,6 +465,30 @@ with tl2:
     vt_m1.metric("Area (S_V)", f"{s_v:.3f} m²")
     vt_m2.metric("Span / Height (b_V)", f"{b_v * 100:.1f} cm")
     vt_m3.metric("Mean Chord (c_V)", f"{c_v * 100:.1f} cm")
+
+
+# For conceptual design, Tail Efficiency * (Lift curve ratio) * (1 - downwash) roughly equals 0.4 - 0.5 for conventional tails
+tail_effectiveness = st.slider(
+    "Tail Effectiveness Factor (eta_h * (a_t/a_w) * (1-de/da))", 
+    0.20, 0.70, 0.45, step=0.01, 
+    help="Approximates dynamic pressure loss and downwash effects over the tail. 0.45 is a safe conceptual baseline."
+)
+
+# X_NP = X_AC_wing + (V_H * MAC * tail_effectiveness)
+# Converting to mm by multiplying MAC by 1000
+x_np = x_ac_wing + (v_h * mac * 1000.0 * tail_effectiveness)
+true_static_margin = ((x_np - x_cg_mm) / (mac * 1000.0)) * 100.0
+
+np_col1, np_col2 = st.columns(2)
+np_col1.metric("Aircraft Neutral Point (X_NP)", f"{x_np:.1f} mm")
+np_col2.metric("True Static Margin", f"{true_static_margin:.1f} % MAC")
+
+if true_static_margin < sm_min:
+    st.error(f"Stability Hazard: True Static margin is {true_static_margin:.1f}%, below set threshold of {sm_min:.1f}%. Move CG forward (mass) or Wing/Tail aft.")
+elif true_static_margin > sm_max:
+    st.warning(f"Over-Stable / High Trim Drag: True Static margin is {true_static_margin:.1f}%, above set threshold of {sm_max:.1f}%. Move CG aft (mass) or Wing forward.")
+else:
+    st.success(f"Stability Acceptable: True Static margin is safely inside bounds ({sm_min:.1f}% - {sm_max:.1f}%).")
 
 # -------------------------------------------------------------
 # STAGE 7: DRAG BUILDUP VERIFICATION & BREAKDOWN
