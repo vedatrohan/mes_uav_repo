@@ -2,31 +2,36 @@ import math
 import json
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd  # <-- Required for 'pd'
 import streamlit as st
 
+# -------------------------------------------------------------
+# GOOGLE DRIVE / SHEETS MASS BUILDFUP INGESTION
+# ------------------------------------------------------------
+
 SHEET_ID = "1ksGFylLwYRefZ5e4smVkHqotms8hJYrnHfDF-Msib30"
-GID = "2084851165"  # Replace with the actual gid of this tab
+SHEET_GID = "2084851165"  # Replace with the actual gid of this tab
 SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={GID}"
 
 @st.cache_data(ttl=60)
-def load_and_clean_mass_table(url: str):
-    # Skip leading blank rows and headers if necessary; pandas handles header detection automatically
+def load_and_clean_mass_table(sheet_id: str, gid: str):
+    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
     df = pd.read_csv(url)
     
-    # Strip whitespace from column names
-    df.columns = [c.strip() for c in df.columns]
+    # Clean column headers
+    df.columns = [str(c).strip() for c in df.columns]
     
-    # Filter out empty rows or the summary 'Toplam' row
-    # Adjust column name matching to your header ('Ürün' or similar)
+    # Locate product column
     col_name = "Ürün" if "Ürün" in df.columns else df.columns[0]
+    
+    # Filter empty or 'Toplam' summary rows
     df = df[df[col_name].notna()]
     df = df[~df[col_name].astype(str).str.contains("Toplam|Total", case=False)]
     
-    # Columns to parse as floats
+    # Parse numbers with Turkish locale formats (commas as decimals)
     num_cols = ["Ağırlık(gr)", "X (mm)", "Y (mm)", "Z (mm)"]
     for col in num_cols:
         if col in df.columns:
-            # Handle Turkish formatting: replace thousand dot, swap decimal comma to dot
             df[col] = (
                 df[col]
                 .astype(str)
@@ -34,32 +39,29 @@ def load_and_clean_mass_table(url: str):
                 .str.replace(",", ".", regex=False)
                 .astype(float)
             )
-            
     return df
 
-# Ingest and display
+# Default values if connection fails
+live_mtow_kg = 3.0
+x_cg_mm = 400.0
+
 try:
-    df_mass = load_and_clean_mass_table(SHEET_URL)
+    df_mass = load_and_clean_mass_table(SHEET_ID, SHEET_GID)
     
-    # Calculate Live Weight Buildup
     total_mass_gr = df_mass["Ağırlık(gr)"].sum()
     live_mtow_kg = total_mass_gr / 1000.0
     
-    # Calculate Longitudinal CG (X_cg in mm from your reference datum)
-    # X_cg = Sum(m_i * x_i) / Sum(m_i)
+    # Center of Gravity wrt Nose (X = 0)
     total_moment_x = (df_mass["Ağırlık(gr)"] * df_mass["X (mm)"]).sum()
     x_cg_mm = total_moment_x / total_mass_gr
-
-    col1, col2 = st.columns(2)
-    col1.metric("Live MTOW (from Drive)", f"{live_mtow_kg:.3f} kg")
-    col2.metric("Longitudinal CG (X_CG)", f"{x_cg_mm:.1f} mm")
-
-    # Pass live_mtow_kg into your Stage 2 constraint analysis
-    target_mtow = live_mtow_kg
-
+    
+    st.sidebar.success("Mass table synced from Drive.")
+    st.sidebar.metric("Live MTOW", f"{live_mtow_kg:.3f} kg")
+    st.sidebar.metric("Longitudinal CG (from Nose)", f"{x_cg_mm:.1f} mm")
+    
 except Exception as e:
-    st.error(f"Failed to fetch or parse mass table: {e}")
-
+    st.sidebar.warning(f"Could not load live sheet: {e}")
+    st.sidebar.info("Falling back to default manual weights.")
 st.set_page_config(page_title="Bilkent UAV Sizing Suite", layout="wide")
 
 # -------------------------------------------------------------
@@ -279,7 +281,32 @@ with col_w2:
 
     if apply_taper and re_tip_stall < re_crit_tip:
         st.error(f"Tip Stall Danger: Tip Reynolds number at stall ({re_tip_stall:,.0f}) is below the critical threshold of {re_crit_tip}. Flow will detach at wingtips first. Increase tip chord or incorporate negative washout twist.")
+st.subheader("CG & Static Margin Check")
 
+# User sets where the wing leading edge sits relative to the nose
+x_le_wing = st.number_input(
+    "Wing Leading Edge Location from Nose X_LE (mm)", 
+    value=350.0, 
+    step=10.0
+)
+
+# Aerodynamic Center approximation (25% of MAC for subsonic airfoils)
+x_ac_wing = x_le_wing + (0.25 * mac * 1000.0)
+
+# Static Margin calculation: (X_ac - X_cg) / MAC
+# (Positive = statically stable, pitch-down on disturbance)
+static_margin = ((x_ac_wing - x_cg_mm) / (mac * 1000.0)) * 100.0
+
+col_sm1, col_sm2 = st.columns(2)
+col_sm1.metric("Wing Aerodynamic Center (X_AC)", f"{x_ac_wing:.1f} mm")
+col_sm2.metric("Static Margin (Wing Only)", f"{static_margin:.1f}% MAC")
+
+if static_margin < 5.0:
+    st.error(f"Instability Hazard: Static margin is {static_margin:.1f}% (Below 5%). Move components forward or move the wing backward.")
+elif static_margin > 20.0:
+    st.warning(f"Overly Stable / Nose-Heavy: Static margin is {static_margin:.1f}% (Above 20%). Requires high elevator deflection and causes trim drag.")
+else:
+    st.success(f"Static Margin Optimal: {static_margin:.1f}% is in the stable handling zone (5% - 20%).")
 # -------------------------------------------------------------
 # STAGE 4: AIRFOIL SELECTION CHECKPOINT
 # -------------------------------------------------------------
