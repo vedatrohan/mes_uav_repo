@@ -2,33 +2,36 @@ import math
 import json
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd  # <-- Required for 'pd'
+import pandas as pd
 import streamlit as st
 
+# MUST BE THE FIRST STREAMLIT COMMAND
+st.set_page_config(page_title="Bilkent UAV Sizing Suite", layout="wide")
+
 # -------------------------------------------------------------
-# GOOGLE DRIVE / SHEETS MASS BUILDFUP INGESTION
-# ------------------------------------------------------------
+# GOOGLE DRIVE / SHEETS MASS BUILDUP INGESTION
+# -------------------------------------------------------------
+st.sidebar.header("Mass Buildup (Google Drive)")
 
 SHEET_ID = "1ksGFylLwYRefZ5e4smVkHqotms8hJYrnHfDF-Msib30"
-SHEET_GID = "2084851165"  # Replace with the actual gid of this tab
-SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={GID}"
+SHEET_GID = "2084851165"
 
 @st.cache_data(ttl=60)
 def load_and_clean_mass_table(sheet_id: str, gid: str):
     url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
     df = pd.read_csv(url)
     
-    # Clean column headers
+    # Strip whitespace from header strings
     df.columns = [str(c).strip() for c in df.columns]
     
     # Locate product column
     col_name = "Ürün" if "Ürün" in df.columns else df.columns[0]
     
-    # Filter empty or 'Toplam' summary rows
+    # Drop empty rows and summary 'Toplam'/'Total' rows
     df = df[df[col_name].notna()]
     df = df[~df[col_name].astype(str).str.contains("Toplam|Total", case=False)]
     
-    # Parse numbers with Turkish locale formats (commas as decimals)
+    # Parse numbers handling Turkish locale (dot for thousands, comma for decimals)
     num_cols = ["Ağırlık(gr)", "X (mm)", "Y (mm)", "Z (mm)"]
     for col in num_cols:
         if col in df.columns:
@@ -41,34 +44,33 @@ def load_and_clean_mass_table(sheet_id: str, gid: str):
             )
     return df
 
-# Default values if connection fails
+# Default fallback values if sheet read fails
 live_mtow_kg = 3.0
 x_cg_mm = 400.0
+use_live_sheet = False
 
 try:
     df_mass = load_and_clean_mass_table(SHEET_ID, SHEET_GID)
-    
     total_mass_gr = df_mass["Ağırlık(gr)"].sum()
     live_mtow_kg = total_mass_gr / 1000.0
     
-    # Center of Gravity wrt Nose (X = 0)
+    # Longitudinal CG (X = 0 at fuselage nose)
     total_moment_x = (df_mass["Ağırlık(gr)"] * df_mass["X (mm)"]).sum()
     x_cg_mm = total_moment_x / total_mass_gr
     
     st.sidebar.success("Mass table synced from Drive.")
     st.sidebar.metric("Live MTOW", f"{live_mtow_kg:.3f} kg")
     st.sidebar.metric("Longitudinal CG (from Nose)", f"{x_cg_mm:.1f} mm")
-    
+    use_live_sheet = True
 except Exception as e:
     st.sidebar.warning(f"Could not load live sheet: {e}")
-    st.sidebar.info("Falling back to default manual weights.")
-st.set_page_config(page_title="Bilkent UAV Sizing Suite", layout="wide")
+    st.sidebar.info("Falling back to manual weights.")
 
 # -------------------------------------------------------------
 # STATE MANAGEMENT & CONFIGURATION I/O
 # -------------------------------------------------------------
 default_config = {
-    "target_mtow": 3.0,
+    "target_mtow": float(live_mtow_kg),
     "v_to": 11.0,
     "s_g": 20.0,
     "runway_friction_idx": 1,
@@ -82,15 +84,20 @@ default_config = {
     "g": 9.80665,
     "cd0_active": 0.035,
     "max_wind": 5.0,
-    "wind_sf": 1.2
+    "wind_sf": 1.2,
+    "x_le_wing": 350.0
 }
 
 for key, val in default_config.items():
     if key not in st.session_state:
         st.session_state[key] = val
 
+# Sync live mass if connected and state not manually decoupled
+if use_live_sheet:
+    st.session_state["target_mtow"] = float(live_mtow_kg)
+
 st.title("Bilkent UAV Conceptual Sizing & Aero Synthesis")
-st.caption("Interactive aircraft sizing loop: Mission Limits -> Constraint Analysis -> Wing & Taper -> Tail -> Drag Buildup.")
+st.caption("Interactive aircraft sizing loop: Mission Limits -> Constraint Analysis -> Wing & Taper -> CG Stability -> Tail -> Drag Buildup.")
 
 with st.sidebar:
     st.header("Configuration Management")
@@ -118,6 +125,7 @@ with st.sidebar:
 
 def update_cd0_callback():
     st.session_state.cd0_active = st.session_state.temp_recalc_cd0
+
 # -------------------------------------------------------------
 # STAGE 1: MISSION PROFILE & DESIGN LIMITS
 # -------------------------------------------------------------
@@ -127,7 +135,12 @@ col_p1, col_p2, col_p3 = st.columns(3)
 
 with col_p1:
     st.subheader("Takeoff & Surface")
-    target_mtow = st.number_input("Target MTOW (kg)", step=0.1, key="target_mtow")
+    target_mtow = st.number_input(
+        "Target MTOW (kg)", 
+        step=0.1, 
+        key="target_mtow",
+        help="Derived automatically from Google Sheets if connected."
+    )
     v_to = st.number_input("Takeoff Speed V_TO (m/s)", step=0.5, key="v_to")
     s_g = st.number_input("Ground Run Limit S_g (m)", step=1.0, key="s_g")
     
@@ -242,9 +255,9 @@ with col_plot:
     st.pyplot(fig)
 
 # -------------------------------------------------------------
-# STAGE 3: WING SIZING & TAPER CHECKPOINT
+# STAGE 3: WING SIZING & STATIC MARGIN CHECKPOINT
 # -------------------------------------------------------------
-st.header("3. Wing Geometry & Taper Selection")
+st.header("3. Wing Geometry & Longitudinal Stability")
 wingspan_total = math.sqrt(ar * s_req)
 
 col_w1, col_w2 = st.columns([1, 1])
@@ -281,32 +294,37 @@ with col_w2:
 
     if apply_taper and re_tip_stall < re_crit_tip:
         st.error(f"Tip Stall Danger: Tip Reynolds number at stall ({re_tip_stall:,.0f}) is below the critical threshold of {re_crit_tip}. Flow will detach at wingtips first. Increase tip chord or incorporate negative washout twist.")
-st.subheader("CG & Static Margin Check")
 
-# User sets where the wing leading edge sits relative to the nose
-x_le_wing = st.number_input(
-    "Wing Leading Edge Location from Nose X_LE (mm)", 
-    value=350.0, 
-    step=10.0
-)
+st.markdown("---")
+st.subheader("Center of Gravity & Longitudinal Stability (Static Margin)")
 
-# Aerodynamic Center approximation (25% of MAC for subsonic airfoils)
-x_ac_wing = x_le_wing + (0.25 * mac * 1000.0)
+col_cg1, col_cg2 = st.columns(2)
 
-# Static Margin calculation: (X_ac - X_cg) / MAC
-# (Positive = statically stable, pitch-down on disturbance)
-static_margin = ((x_ac_wing - x_cg_mm) / (mac * 1000.0)) * 100.0
+with col_cg1:
+    x_le_wing = st.number_input(
+        "Wing Leading Edge Location from Nose X_LE (mm)", 
+        step=10.0,
+        key="x_le_wing"
+    )
+    # Wing Aerodynamic Center placed at 25% MAC
+    x_ac_wing = x_le_wing + (0.25 * mac * 1000.0)
+    
+    # Static Margin calculation: (X_ac - X_cg) / MAC * 100
+    static_margin = ((x_ac_wing - x_cg_mm) / (mac * 1000.0)) * 100.0
 
-col_sm1, col_sm2 = st.columns(2)
-col_sm1.metric("Wing Aerodynamic Center (X_AC)", f"{x_ac_wing:.1f} mm")
-col_sm2.metric("Static Margin (Wing Only)", f"{static_margin:.1f}% MAC")
+with col_cg2:
+    sm_col1, sm_col2 = st.columns(2)
+    sm_col1.metric("Current CG (from Nose)", f"{x_cg_mm:.1f} mm")
+    sm_col1.metric("Wing AC (X_AC)", f"{x_ac_wing:.1f} mm")
+    sm_col2.metric("Static Margin", f"{static_margin:.1f}% MAC")
 
-if static_margin < 5.0:
-    st.error(f"Instability Hazard: Static margin is {static_margin:.1f}% (Below 5%). Move components forward or move the wing backward.")
-elif static_margin > 20.0:
-    st.warning(f"Overly Stable / Nose-Heavy: Static margin is {static_margin:.1f}% (Above 20%). Requires high elevator deflection and causes trim drag.")
-else:
-    st.success(f"Static Margin Optimal: {static_margin:.1f}% is in the stable handling zone (5% - 20%).")
+    if static_margin < 5.0:
+        st.error(f"Stability Hazard: Static margin is {static_margin:.1f}% (< 5%). Aircraft is neutral or unstable. Shift internal components forward or shift wing location aft.")
+    elif static_margin > 20.0:
+        st.warning(f"Excessive Nose-Heavy Trim: Static margin is {static_margin:.1f}% (> 20%). Elevators will require large trim angles, causing severe trim drag.")
+    else:
+        st.success(f"Stability Optimal: Static margin {static_margin:.1f}% MAC sits inside the target envelope (5% - 20%).")
+
 # -------------------------------------------------------------
 # STAGE 4: AIRFOIL SELECTION CHECKPOINT
 # -------------------------------------------------------------
@@ -388,7 +406,7 @@ with col_dg1:
 with col_dg2:
     st.write(f"Fineness Ratio (f): {fineness:.2f}")
     st.write(f"Fuselage Form Factor (FF): {form_factor:.3f}")
-    st.write("---")
+    st.markdown("---")
     st.write(f"Calculated Fuselage CD0: {cd0_fuse:.4f}")
     st.write(f"Wing/Empennage CD0: {cd_wing_emp:.4f}")
     st.write(f"Landing Gear CD0: {gear_cd_added:.4f}")
