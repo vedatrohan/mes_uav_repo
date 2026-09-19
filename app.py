@@ -1,5 +1,4 @@
 import math
-import json
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -120,15 +119,20 @@ default_config = {
     "rho": 1.225,
     "g": 9.80665,
     "cd0_active": 0.035,
-    "max_wind": 5.0,
-    "wind_sf": 1.2,
     "x_le_wing": 350.0,
     "eta_cruise": 0.72,
     "eta_climb": 0.65,
     "eta_to": 0.50,
     "eta_motor_esc": 0.82,
     "sm_min": 8.0,
-    "sm_max": 15.0
+    "sm_max": 15.0,
+    "prop_dia_in": 12.0,
+    "prop_pitch_in": 6.0,
+    "prop_rpm": 7500.0,
+    "prop_eta_max": 0.78,
+    "use_dynamic_prop": True,
+    "gust_velocity": 7.0,
+    "n_pos_limit": 3.8
 }
 
 for key, val in default_config.items():
@@ -139,7 +143,7 @@ if use_live_sheet:
     st.session_state["target_mtow"] = float(live_mtow_kg)
 
 st.title("Bilkent UAV Conceptual Sizing Suite (P/W Analysis)")
-st.caption("Power-to-Weight Constraint Analysis with Dynamic Efficiencies and Center of Gravity Integration.")
+st.caption("Power-to-Weight Constraint Analysis with Dynamic Efficiencies, J Curves, Gust Checks, and CG Integration.")
 
 with st.sidebar:
     st.header("Stability Margin Limits")
@@ -147,10 +151,46 @@ with st.sidebar:
     sm_max = st.slider("Maximum Static Margin (% MAC)", 15.0, 30.0, step=0.5, key="sm_max")
 
     st.markdown("---")
-    st.header("Powertrain Efficiencies")
-    eta_cruise = st.slider("Cruise Propeller Efficiency", 0.50, 0.85, step=0.01, key="eta_cruise")
-    eta_climb = st.slider("Climb Propeller Efficiency", 0.45, 0.80, step=0.01, key="eta_climb")
-    eta_to = st.slider("Takeoff Avg Propeller Efficiency", 0.35, 0.65, step=0.01, key="eta_to")
+    st.header("Powertrain & Propeller Setup")
+    use_dynamic_prop = st.checkbox("Model Propeller Efficiency via Advance Ratio (J)?", key="use_dynamic_prop")
+    
+    if use_dynamic_prop:
+        prop_dia_in = st.number_input("Propeller Diameter (inches)", value=12.0, step=0.5, key="prop_dia_in")
+        prop_pitch_in = st.number_input("Propeller Pitch (inches)", value=6.0, step=0.5, key="prop_pitch_in")
+        prop_rpm = st.number_input("Operating Engine / Prop RPM", value=7500.0, step=250.0, key="prop_rpm")
+        prop_eta_max = st.slider("Max Propeller Efficiency (eta_max)", 0.60, 0.88, 0.78, step=0.01, key="prop_eta_max")
+
+        d_m = prop_dia_in * 0.0254
+        p_m = prop_pitch_in * 0.0254
+        n_rps = prop_rpm / 60.0
+        j_pitch = p_m / d_m  # Advance ratio for zero thrust ~ pitch/dia
+
+        def calc_eta_prop(v_mps):
+            if n_rps <= 0 or d_m <= 0:
+                return 0.5
+            j = v_mps / (n_rps * d_m)
+            # Normalized parabolic efficiency model centered at 0.75 * J_pitch
+            j_opt = 0.75 * j_pitch
+            if j <= 0:
+                return 0.15 # Static thrust ground regime
+            if j >= j_pitch:
+                return 0.05
+            eta = prop_eta_max * (1.0 - ((j - j_opt) / j_opt)**2)
+            return max(float(eta), 0.15)
+
+        eta_cruise = calc_eta_prop(st.session_state.v_cruise)
+        eta_climb = calc_eta_prop(st.session_state.v_climb)
+        eta_to = calc_eta_prop(st.session_state.v_to / math.sqrt(2))
+
+        st.caption(f"Calculated Dynamic Efficiencies:")
+        st.write(f"- Cruise J: `{st.session_state.v_cruise / (n_rps * d_m):.2f}` → $\\eta_p$: `{eta_cruise:.3f}`")
+        st.write(f"- Climb J: `{st.session_state.v_climb / (n_rps * d_m):.2f}` → $\\eta_p$: `{eta_climb:.3f}`")
+        st.write(f"- Takeoff J: `{(st.session_state.v_to/math.sqrt(2)) / (n_rps * d_m):.2f}` → $\\eta_p$: `{eta_to:.3f}`")
+    else:
+        eta_cruise = st.slider("Cruise Propeller Efficiency", 0.50, 0.85, step=0.01, key="eta_cruise")
+        eta_climb = st.slider("Climb Propeller Efficiency", 0.45, 0.80, step=0.01, key="eta_climb")
+        eta_to = st.slider("Takeoff Avg Propeller Efficiency", 0.35, 0.65, step=0.01, key="eta_to")
+
     eta_motor_esc = st.slider("Motor & ESC Efficiency", 0.70, 0.95, step=0.01, key="eta_motor_esc")
 
 def update_cd0_callback():
@@ -228,7 +268,6 @@ with col_ar:
     tw_to = ((v_to**2) / (2 * g * s_g)) + (q_to_avg * 0.05 / ws_crit_pa) + runway_friction * (1.0 - (q_to_avg * 0.6 / ws_crit_pa))
 
     # Convert to Electrical Power-to-Weight (W/kg)
-    # P_elec/m = (T/W) * g * V / (eta_prop * eta_motor_esc)
     pw_crit = {
         "Cruise": (tw_cruise * g * v_cruise) / (eta_cruise * eta_motor_esc),
         "Climb": (tw_climb * g * v_climb) / (eta_climb * eta_motor_esc),
@@ -314,18 +353,65 @@ with col_w2:
     sm2.metric("Wing Aerodynamic Center", f"{x_ac_wing:.1f} mm")
     sm2.metric("Calculated Static Margin", f"{static_margin:.1f}% MAC")
 
-    # Evaluation using user-defined criteria
     if static_margin < sm_min:
-        st.error(f"Stability Hazard: Static margin is {static_margin:.1f}%, below your set limit of {sm_min:.1f}%. Move mass forward or wing aft.")
+        st.error(f"Stability Hazard: Static margin is {static_margin:.1f}%, below set limit of {sm_min:.1f}%. Move mass forward or wing aft.")
     elif static_margin > sm_max:
-        st.warning(f"Over-Stable / High Trim Drag: Static margin is {static_margin:.1f}%, above your set limit of {sm_max:.1f}%. Move mass aft or wing forward.")
+        st.warning(f"Over-Stable / High Trim Drag: Static margin is {static_margin:.1f}%, above set limit of {sm_max:.1f}%. Move mass aft or wing forward.")
     else:
-        st.success(f"Stability Acceptable: Static margin is inside your bounds ({sm_min:.1f}% - {sm_max:.1f}%).")
+        st.success(f"Stability Acceptable: Static margin is inside bounds ({sm_min:.1f}% - {sm_max:.1f}%).")
 
 # -------------------------------------------------------------
-# STAGE 4: AIRFOIL TRANSLATION
+# STAGE 4: GUST LOAD FACTOR VERIFICATION (FAR 23 / CS-VLA)
 # -------------------------------------------------------------
-st.header("4. Airfoil 2D Lift Requirements")
+st.header("4. Gust Load Factor & Atmospheric Safety Check")
+g_col1, g_col2 = st.columns(2)
+
+with g_col1:
+    gust_v = st.number_input("Design Vertical Gust Velocity U_de (m/s)", value=7.0, step=0.5, key="gust_velocity")
+    n_limit_pos = st.number_input("Design Positive Structural Limit Load Factor (+n_limit)", value=3.8, step=0.1, key="n_pos_limit")
+    
+    # 3D Lift Curve Slope calculation (rad^-1) using Helmbold / Diederich formula
+    cla_2d = 2.0 * math.pi
+    cla_3d = cla_2d / (math.sqrt(1.0 + (cla_2d / (math.pi * ar))**2) + (cla_2d / (math.pi * ar)))
+    
+    # Wing loading in Pascals
+    ws_actual_pa = (target_mtow * g) / s_req
+    
+    # Aircraft mass ratio mu_g
+    mu_g = (2.0 * ws_actual_pa) / (rho * mac * cla_3d * g)
+    
+    # Pratt gust alleviation factor Kg
+    k_g = (0.88 * mu_g) / (5.3 + mu_g)
+    
+    # Incremental gust load factor delta_n
+    delta_n_gust = (k_g * cla_3d * rho * v_cruise * gust_v) / (2.0 * ws_actual_pa)
+    n_peak_gust = 1.0 + delta_n_gust
+
+with g_col2:
+    st.subheader(f"Gust Response at {gust_v:.1f} m/s")
+    g_m1, g_m2 = st.columns(2)
+    g_m1.metric("Gust Alleviation Factor (Kg)", f"{k_g:.3f}")
+    g_m1.metric("3D Lift Curve Slope (C_L_alpha)", f"{cla_3d:.2f} /rad")
+    g_m2.metric("Gust Induced Delta n", f"+{delta_n_gust:.2f} g")
+    g_m2.metric("Total Peak Load Factor", f"{n_peak_gust:.2f} g")
+
+    if n_peak_gust > n_limit_pos:
+        st.error(
+            f"**Structural Hazard:** Peak gust load ({n_peak_gust:.2f} g) exceeds the allowable limit factor "
+            f"({n_limit_pos:.2f} g). Structural failure or wing deformation risk under {gust_v} m/s vertical gust. "
+            f"Increase design wing loading (W/S), reduce cruise speed, or beef up the spar."
+        )
+    else:
+        structural_margin = ((n_limit_pos - n_peak_gust) / n_limit_pos) * 100.0
+        st.success(
+            f"**Safe Against Gusts:** Peak load ({n_peak_gust:.2f} g) is below the structural limit ({n_limit_pos:.2f} g). "
+            f"Structural safety margin: {structural_margin:.1f}%."
+        )
+
+# -------------------------------------------------------------
+# STAGE 5: AIRFOIL TRANSLATION
+# -------------------------------------------------------------
+st.header("5. Airfoil 2D Lift Requirements")
 cl_3d_cruise = (2.0 * target_mtow * g) / (rho * (v_cruise**2) * s_req)
 cl_2d_cruise = cl_3d_cruise / (1.0 - (cl_3d_cruise / (math.pi * ar * e0)))
 cl_2d_stall = cl_max_est / (1.0 - (cl_max_est / (math.pi * ar * e0)))
@@ -336,9 +422,9 @@ af2.metric("Target 2D Airfoil Cl (Cruise)", f"{cl_2d_cruise:.3f}")
 af3.metric("Target 2D Airfoil Cl_max", f"{cl_2d_stall:.3f}")
 
 # -------------------------------------------------------------
-# STAGE 5: TAIL SIZING
+# STAGE 6: TAIL SIZING
 # -------------------------------------------------------------
-st.header("5. Empennage Sizing")
+st.header("6. Empennage Sizing")
 tl1, tl2 = st.columns(2)
 
 with tl1:
@@ -356,9 +442,9 @@ with tl2:
     st.metric("Vertical Fin Area (S_V)", f"{s_v:.3f} m^2")
 
 # -------------------------------------------------------------
-# STAGE 6: DRAG BUILDUP FEEDBACK
+# STAGE 7: DRAG BUILDUP FEEDBACK
 # -------------------------------------------------------------
-st.header("6. Drag Buildup Verification")
+st.header("7. Drag Buildup Verification")
 dg1, dg2 = st.columns(2)
 
 with dg1:
