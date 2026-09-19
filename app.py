@@ -372,44 +372,6 @@ with col_w2:
         st.warning(f"Flow Separation Risk: Tip Re ({re_tip:,.0f}) is below the {re_tip_threshold:,} threshold. Consider increasing tip chord or cruise speed.")
 
 # -------------------------------------------------------------
-# STAGE 4: GUST LOAD FACTOR VERIFICATION (FAR 23 / CS-VLA)
-# -------------------------------------------------------------
-st.header("4. Gust Load Factor & Atmospheric Safety Check")
-g_col1, g_col2 = st.columns(2)
-
-with g_col1:
-    gust_v = st.number_input("Design Vertical Gust Velocity U_de (m/s)", value=7.0, step=0.5, key="gust_velocity")
-    n_limit_pos = st.number_input("Design Positive Structural Limit Load Factor (+n_limit)", value=3.8, step=0.1, key="n_pos_limit")
-    
-    cla_2d = 2.0 * math.pi
-    cla_3d = cla_2d / (math.sqrt(1.0 + (cla_2d / (math.pi * ar))**2) + (cla_2d / (math.pi * ar)))
-    ws_actual_pa = (target_mtow * g) / s_req
-    mu_g = (2.0 * ws_actual_pa) / (rho * mac * cla_3d * g)
-    k_g = (0.88 * mu_g) / (5.3 + mu_g)
-    delta_n_gust = (k_g * cla_3d * rho * v_cruise * gust_v) / (2.0 * ws_actual_pa)
-    n_peak_gust = 1.0 + delta_n_gust
-
-with g_col2:
-    st.subheader(f"Gust Response at {gust_v:.1f} m/s")
-    g_m1, g_m2 = st.columns(2)
-    g_m1.metric("Gust Alleviation Factor (Kg)", f"{k_g:.3f}")
-    g_m1.metric("3D Lift Curve Slope (C_L_alpha)", f"{cla_3d:.2f} /rad")
-    g_m2.metric("Gust Induced Delta n", f"+{delta_n_gust:.2f} g")
-    g_m2.metric("Total Peak Load Factor", f"{n_peak_gust:.2f} g")
-
-    if n_peak_gust > n_limit_pos:
-        st.error(
-            f"**Structural Hazard:** Peak gust load ({n_peak_gust:.2f} g) exceeds allowable limit "
-            f"({n_limit_pos:.2f} g). Structural failure or wing deformation risk under {gust_v} m/s vertical gust."
-        )
-    else:
-        structural_margin = ((n_limit_pos - n_peak_gust) / n_limit_pos) * 100.0
-        st.success(
-            f"**Safe Against Gusts:** Peak load ({n_peak_gust:.2f} g) is below the structural limit ({n_limit_pos:.2f} g). "
-            f"Safety margin: {structural_margin:.1f}%."
-        )
-
-# -------------------------------------------------------------
 # STAGE 5: AIRFOIL TRANSLATION
 # -------------------------------------------------------------
 st.header("5. Airfoil 2D Lift Requirements")
