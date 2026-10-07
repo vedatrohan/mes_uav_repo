@@ -657,8 +657,8 @@ for stage_name, data in stages.items():
         ))
 
 fig.update_layout(
-    title=f"Propeller Efficiency ($\eta$) vs Advance Ratio ($J$) - {active_prop_dia_inch}\" Prop",
-    xaxis_title="Advance Ratio ($J = V/nD$)",
+    title=f"n x J Curve",
+    xaxis_title="Advance Ratio",
     yaxis_title="Efficiency (%)",
     yaxis_range=[0, 100], hovermode="x unified"
 )
@@ -673,7 +673,7 @@ wingspan_total = math.sqrt(ar * s_req)
 col_w1, col_w2 = st.columns(2)
 
 with col_w1:
-    apply_taper = st.checkbox("Apply Wing Taper (lambda < 1.0)?", value=False)
+    apply_taper = st.checkbox("Apply Wing Taper?", value=False)
     if not apply_taper:
         lambda_val = 1.0
         c_root = s_req / wingspan_total
