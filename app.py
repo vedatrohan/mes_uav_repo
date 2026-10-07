@@ -517,16 +517,16 @@ with col_el2:
                 
                 # Extract and SCALE DOWN by 1000
                 ct_coeffs = [
-                    safe_get_coef(prop_data, 'CT vs J (a)') / 1000.0,
-                    safe_get_coef(prop_data, 'CT vs J (b)') / 1000.0,
-                    safe_get_coef(prop_data, 'CT vs J (c)') / 1000.0,
-                    safe_get_coef(prop_data, 'CT vs J (d)') / 1000.0
+                    safe_get_coef(prop_data, 'CT vs J (a)'),
+                    safe_get_coef(prop_data, 'CT vs J (b)'),
+                    safe_get_coef(prop_data, 'CT vs J (c)'),
+                    safe_get_coef(prop_data, 'CT vs J (d)')
                 ]
                 cp_coeffs = [
-                    safe_get_coef(prop_data, 'CP vs J (a)') / 1000.0,
-                    safe_get_coef(prop_data, 'CP vs J (b)') / 1000.0,
-                    safe_get_coef(prop_data, 'CP vs J (c)') / 1000.0,
-                    safe_get_coef(prop_data, 'CP vs J (d)') / 1000.0
+                    safe_get_coef(prop_data, 'CP vs J (a)'),
+                    safe_get_coef(prop_data, 'CP vs J (b)'),
+                    safe_get_coef(prop_data, 'CP vs J (c)'),
+                    safe_get_coef(prop_data, 'CP vs J (d)')
                 ]
             else:
                 st.warning(f"Extracted [Dia: {target_dia}\", Pitch: {target_pitch}\"] from '{prop_choice}', but no exact match exists in the Propeller Database. Defaulting to Custom.")
