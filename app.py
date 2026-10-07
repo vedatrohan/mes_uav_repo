@@ -56,7 +56,7 @@ propeller_sheet_gid = "31584601"
 def load_gsheet_csv(sheet_id, gid, header_row=0):
     url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
     try:
-        return pd.read_csv(url, header=header_row)
+        return pd.read_csv(url, header=header_row, decimal=',')
     except Exception as e:
         st.error(f"Failed to load database. Ensure the sheet is public. Error: {e}")
         return pd.DataFrame()
