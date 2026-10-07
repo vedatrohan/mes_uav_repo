@@ -11,8 +11,26 @@ st.set_page_config(page_title="Bilkent UAV Sizing Suite", layout="wide")
 # -------------------------------------------------------------
 st.sidebar.header("Mass Buildup (Google Drive)")
 
-SHEET_ID = "1ksGFylLwYRefZ5e4smVkHqotms8hJYrnHfDF-Msib30"
-SHEET_GID = "2084851165"
+design_sheet_id = "1ksGFylLwYRefZ5e4smVkHqotms8hJYrnHfDF-Msib30"
+design_sheet_gid = "2084851165"
+
+database_sheet_id = "1XaC-NVIDd16O-uIKxHvFW03QlGsIyrw7jBEeMRYMFBY"
+motor_sheet_gid = "1771767346"
+propeller_sheet_gid = "31584601"
+
+@st.cache_data
+def load_gsheet_csv(sheet_id, gid, header_row=0):
+    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
+    try:
+        # Pandas reads the csv directly from the public Google Sheet link
+        return pd.read_csv(url, header=header_row)
+    except Exception as e:
+        st.error(f"Failed to load database. Ensure the sheet is public. Error: {e}")
+        return pd.DataFrame()
+
+df_motors = load_gsheet_csv(database_sheet_id, motor_sheet_gid, header_row=2)
+df_props = load_gsheet_csv(database_sheet_id, propeller_sheet_gid, header_row=1)
+
 
 @st.cache_data(ttl=60)
 def load_and_clean_mass_table(sheet_id: str, gid: str):
@@ -36,8 +54,7 @@ def load_and_clean_mass_table(sheet_id: str, gid: str):
     def normalize_str(s):
         return (
             str(s).strip().lower()
-            .replace("ı", "i").replace("İ", "i")
-            .replace("ğ", "g").replace("ü", "u")
+            .replace("ı", "i").replace("ğ", "g").replace("ü", "u")
             .replace("ş", "s").replace("ö", "o")
             .replace("ç", "c").replace(" ", "")
         )
@@ -87,7 +104,7 @@ x_cg_mm = 400.0
 use_live_sheet = False
 
 try:
-    df_mass = load_and_clean_mass_table(SHEET_ID, SHEET_GID)
+    df_mass = load_and_clean_mass_table(design_sheet_id, design_sheet_gid)
     total_mass_gr = df_mass["Ağırlık(gr)"].sum()
     live_mtow_kg = total_mass_gr / 1000.0
     
@@ -142,11 +159,10 @@ for key, val in default_config.items():
 if use_live_sheet:
     st.session_state["target_mtow"] = float(live_mtow_kg)
 
-st.title("Bilkent UAV Conceptual Sizing Suite (P/W Analysis)")
-st.caption("Power-to-Weight Constraint Analysis with Dynamic Efficiencies, Tail Sizing, and Gust Limits.")
+st.title("MES İHA Konsept Tasarım Aracı")
 
 with st.sidebar:
-    st.header("Stability Margin Limits")
+    st.header("Statik Stabilite Marj Sınırları")
     sm_range = st.slider(
         "Allowable Static Margin Range (% MAC)",
         min_value=-5.0,
@@ -205,7 +221,7 @@ def update_cd0_callback():
 # -------------------------------------------------------------
 # STAGE 1: MISSION PROFILE
 # -------------------------------------------------------------
-st.header("1. Mission Profiles & Flight Parameters")
+st.header("1. Görev Profili ve Parametreler")
 col_p1, col_p2, col_p3 = st.columns(3)
 
 with col_p1:
@@ -213,27 +229,53 @@ with col_p1:
     target_mtow = st.number_input("Target MTOW (kg)", step=0.1, key="target_mtow")
     v_to = st.number_input("Takeoff Speed V_TO (m/s)", step=0.5, key="v_to")
     s_g = st.number_input("Ground Run Limit S_g (m)", step=1.0, key="s_g")
-    
-    friction_options = [0.04, 0.08, 0.12, 0.20]
-    st.selectbox(
-        "Runway Type / Friction (mu)",
-        options=range(len(friction_options)),
-        format_func=lambda x: {
-            0: "Asphalt / Concrete (mu = 0.04)",
-            1: "Smooth / Cut Turf (mu = 0.08)",
-            2: "Standard Grass (mu = 0.12)",
-            3: "Tall Grass / Soft Field (mu = 0.20)",
-        }[x],
-        key="runway_friction_idx"
-    )
-    runway_friction = friction_options[st.session_state.runway_friction_idx]
+    runway_friction = st.number_input(
+    "Runway Friction Coefficient", 
+    min_value=0.0, 
+    max_value=1.0, 
+    value=0.08, 
+    step=0.01, 
+    key="runway_friction"
+)
+
+def update_from_bank():
+    phi_rad = np.radians(st.session_state.bank_angle)
+    # Clamp cos to avoid division by zero near 90 deg
+    cos_phi = max(np.cos(phi_rad), 1e-4)
+    st.session_state.n_turn = float(round(1.0 / cos_phi, 2))
+
+def update_from_load():
+    n = max(st.session_state.n_turn, 1.0)
+    # phi = arccos(1 / n)
+    phi_deg = np.degrees(np.arccos(1.0 / n))
+    st.session_state.bank_angle = float(round(phi_deg, 1))
+
 
 with col_p2:
     st.subheader("Speeds & Maneuver")
     v_cruise = st.number_input("Cruise Speed (m/s)", step=0.5, key="v_cruise")
     v_climb = st.number_input("Climb Speed (m/s)", step=0.5, key="v_climb")
     climb_rate = st.number_input("Rate of Climb V_v (m/s)", step=0.5, key="climb_rate")
-    n_turn = st.slider("Sustained Turn Load Factor n", 1.0, 2.5, step=0.05, key="n_turn")
+    climb_angle = np.degrees(np.arcsin(climb_rate / v_climb))
+    st.caption(f"Tırmanma Açısı (γ): **{climb_angle:.1f}°**")
+
+    bank_angle = st.slider(
+        "Bank Angle φ (°)",
+        min_value=0.0,
+        max_value=80.0,
+        step=1.0,
+        key="bank_angle",
+        on_change=update_from_bank
+    )
+
+    n_turn = st.slider(
+        "Sustained Turn Load Factor n",
+        min_value=1.0,
+        max_value=5.75,
+        step=0.05,
+        key="n_turn",
+        on_change=update_from_load
+    )
 
 with col_p3:
     st.subheader("Atmosphere & Aero Limits")
@@ -327,10 +369,121 @@ with col_plot:
     ax.legend(loc="upper right", fontsize=8.0)
     st.pyplot(fig)
 
+# Electrical component selection
+st.header("3. Electronic Components")
+col_el1, col_el2 = st.columns(2)
+
+st.subheader("Battery Configuration")
+col_bat1, col_bat2 = st.columns(2)
+with col_bat1:
+    batt_s = st.number_input("Battery Voltage (Cells / S)", min_value=1, max_value=14, value=4, step=1)
+with col_bat2:
+    batt_cap = st.number_input("Battery Capacity (mAh)", min_value=100, max_value=50000, value=5000, step=100)
+
+st.markdown("---")
+
+# 2. MOTOR & PROPELLER SELECTION
+col_el1, col_el2 = st.columns(2)
+
+selected_motor_compatible_props = []
+
+# --- MOTOR COLUMN ---
+with col_el1:
+    st.subheader("Motor Selection")
+    motor_type = st.radio("Motor Definition", ["Database", "Custom"], horizontal=True)
+
+    if motor_type == "Database":
+        if not df_motors.empty:
+            # Create a clean display string for the dropdown
+            df_motors["Display"] = df_motors["Üretici"].astype(str) + " " + \
+                                   df_motors["Model"].astype(str) + " - " + \
+                                   df_motors["KV"].astype(str) + "KV"
+            
+            motor_choice = st.selectbox("Select a Motor", df_motors["Display"].dropna().unique())
+            
+            # Retrieve the selected motor's row data
+            motor_data = df_motors[df_motors["Display"] == motor_choice].iloc[0]
+            
+            # Display basic motor specs
+            st.info(f"**Weight:** {motor_data.get('Ağırlık', 'N/A')} g  \n"
+                    f"**Max Power:** {motor_data.get('Max. Güç', 'N/A')} W  \n"
+                    f"**Max Amps:** {motor_data.get('Max. Amper', 'N/A')} A  \n"
+                    f"**Internal Res:** {motor_data.get('İç Direnç (mOhm)', 'N/A')} mΩ")
+            
+            # Extract compatible propellers (Assumes they start from Column 10 / 'K' onwards)
+            prop_cols = motor_data.index[10:] 
+            valid_props = motor_data[prop_cols].dropna().astype(str).tolist()
+            # Clean up the list to ignore empty strings or "nan"
+            selected_motor_compatible_props = [p.strip() for p in valid_props if p.strip() and p.lower() != "nan"]
+        else:
+            st.warning("Motor database is empty or could not be loaded.")
+
+    else:
+        # Custom Motor Inputs
+        c_motor_kv = st.number_input("KV Rating", min_value=10, value=1000, step=50)
+        c_motor_weight = st.number_input("Motor Weight (g)", min_value=1.0, value=100.0, step=5.0)
+        c_motor_max_amp = st.number_input("Max Continuous Current (A)", min_value=1.0, value=30.0, step=1.0)
+        c_motor_max_power = st.number_input("Max Power (W)", min_value=1.0, value=400.0, step=10.0)
+        c_motor_idle_amp = st.number_input("Idle Current / Boş Akım (A)", min_value=0.1, value=1.0, step=0.1)
+        c_motor_ir = st.number_input("Internal Resistance (mOhm)", min_value=1.0, value=50.0, step=1.0)
+
+
+# --- PROPELLER COLUMN ---
+with col_el2:
+    st.subheader("Propeller Selection")
+    prop_type = st.radio("Propeller Definition", ["Database", "Custom"], horizontal=True)
+
+    if prop_type == "Database":
+        if not df_props.empty:
+            # Create a clean display string for the dropdown
+            df_props["Display"] = df_props["Üretici"].astype(str) + " " + \
+                                  df_props["Diameter"].astype(str) + "x" + \
+                                  df_props["Pitch"].astype(str)
+            
+            # Determine which options to show
+            if motor_type == "Database" and selected_motor_compatible_props:
+                st.caption("Filtered to compatible propellers for selected motor:")
+                prop_options = selected_motor_compatible_props
+            else:
+                prop_options = df_props["Display"].dropna().unique()
+            
+            prop_choice = st.selectbox("Select a Propeller", prop_options)
+
+            # If the user selected a prop that exists in the database, show its specs
+            if prop_choice in df_props["Display"].values:
+                prop_data = df_props[df_props["Display"] == prop_choice].iloc[0]
+                st.info(f"**Diameter:** {prop_data.get('Diameter', 'N/A')}\"  \n"
+                        f"**Pitch:** {prop_data.get('Pitch', 'N/A')}\"  \n"
+                        f"**Blades:** {prop_data.get('Pal Sayısı', 'N/A')}")
+            else:
+                # Fallback if a manufacturer listed a prop name that isn't fully profiled in the Prop DB yet
+                st.warning(f"'{prop_choice}' selected from Motor DB, but it lacks an exact curve profile in the Propeller DB.")
+        else:
+            st.warning("Propeller database is empty or could not be loaded.")
+
+    else:
+        # Custom Propeller Inputs
+        c_prop_dia = st.number_input("Diameter (inch)", min_value=1.0, value=10.0, step=0.5)
+        c_prop_pitch = st.number_input("Pitch (inch)", min_value=1.0, value=4.5, step=0.5)
+        c_prop_blades = st.number_input("Blades (Pal Sayısı)", min_value=2, max_value=8, value=2, step=1)
+        
+        st.markdown("**Thrust Coefficient ($C_T$) Curve Fits**")
+        st.caption("Format: $C_T = a + bJ + cJ^2$")
+        ct1, ct2, ct3 = st.columns(3)
+        c_ct_a = ct1.number_input("$C_T$ (a)", value=0.100, format="%.4f")
+        c_ct_b = ct2.number_input("$C_T$ (b)", value=-0.050, format="%.4f")
+        c_ct_c = ct3.number_input("$C_T$ (c)", value=0.000, format="%.4f")
+        
+        st.markdown("**Power Coefficient ($C_P$) Curve Fits**")
+        st.caption("Format: $C_P = a + bJ + cJ^2$")
+        cp1, cp2, cp3 = st.columns(3)
+        c_cp_a = cp1.number_input("$C_P$ (a)", value=0.050, format="%.4f")
+        c_cp_b = cp2.number_input("$C_P$ (b)", value=-0.020, format="%.4f")
+        c_cp_c = cp3.number_input("$C_P$ (c)", value=0.000, format="%.4f")
 # -------------------------------------------------------------
-# STAGE 3: WING SIZING & CUSTOM STATIC MARGIN CHECK
+# STAGE 3: WING SIZING 
 # -------------------------------------------------------------
-st.header("3. Wing Sizing & Longitudinal Stability")
+st.header("4. Wing Sizing")
 wingspan_total = math.sqrt(ar * s_req)
 
 col_w1, col_w2 = st.columns(2)
@@ -390,60 +543,146 @@ af3.metric("Target 2D Airfoil Cl_max", f"{cl_2d_stall:.3f}")
 st.header("6. Empennage Sizing & Detailed Geometry")
 tl1, tl2 = st.columns(2)
 
+# ==========================================
+# 1. HORIZONTAL TAIL (HT)
+# ==========================================
 with tl1:
-    st.subheader("Horizontal Tail (HTP)")
-    l_h = st.slider("Horizontal Moment Arm l_H (m)", 0.40, 1.20, 0.65, step=0.05)
+    st.subheader("Horizontal Tail")
+    l_h = st.slider(
+        "Horizontal Moment Arm l_H (m)", 0.40, 1.20, 0.65, step=0.05,
+        help="Distance from Wing AC to Horizontal Tail AC (at tail MAC quarter-chord)"
+    )
     v_h = st.slider("Volume Coefficient V_H", 0.40, 0.85, 0.60, step=0.05)
-    ar_h = st.slider("Horizontal Tail Aspect Ratio (AR_H)", 3.0, 7.0, 4.5, step=0.5)
-
+    
+    # Target surface area fixed by volume coefficient
     s_h = (v_h * s_req * mac) / l_h
-    b_h = math.sqrt(ar_h * s_h)
-    c_h = s_h / b_h
 
-    ht_m1, ht_m2, ht_m3 = st.columns(3)
+    # Bi-directional Session State Initialization for HT
+    if "ar_h" not in st.session_state:
+        st.session_state.ar_h = 4.5
+    if "b_h" not in st.session_state:
+        st.session_state.b_h = round(math.sqrt(st.session_state.ar_h * s_h), 3)
+
+    def sync_ht_from_ar():
+        st.session_state.b_h = round(math.sqrt(st.session_state.ar_h * s_h), 3)
+
+    def sync_ht_from_b():
+        st.session_state.ar_h = round((st.session_state.b_h ** 2) / s_h, 2)
+
+    col_ar_h, col_b_h = st.columns(2)
+    with col_ar_h:
+        ar_h = st.slider(
+            "Aspect Ratio (AR_H)", 2.0, 8.0, step=0.1,
+            key="ar_h", on_change=sync_ht_from_ar
+        )
+    with col_b_h:
+        b_h = st.slider(
+            "Span b_H (m)", 0.30, 2.00, step=0.01,
+            key="b_h", on_change=sync_ht_from_b
+        )
+
+    taper_h = st.slider("Taper Ratio λ_H (c_tip / c_root)", 0.30, 1.00, 1.00, step=0.05)
+
+    # Tapered Chord & MAC Calculations
+    c_root_h = (2.0 * s_h) / (b_h * (1.0 + taper_h))
+    c_tip_h = taper_h * c_root_h
+    mac_h = (2.0 / 3.0) * c_root_h * ((1.0 + taper_h + taper_h**2) / (1.0 + taper_h))
+    
+    # Spanwise MAC position (from centerline to one tip)
+    y_mac_h = (b_h / 6.0) * ((1.0 + 2.0 * taper_h) / (1.0 + taper_h))
+
+    ht_m1, ht_m2, ht_m3, ht_m4 = st.columns(4)
     ht_m1.metric("Area (S_H)", f"{s_h:.3f} m²")
     ht_m2.metric("Span (b_H)", f"{b_h * 100:.1f} cm")
-    ht_m3.metric("Mean Chord (c_H)", f"{c_h * 100:.1f} cm")
+    ht_m3.metric("Root Chord", f"{c_root_h * 100:.1f} cm")
+    ht_m4.metric("MAC (c_H)", f"{mac_h * 100:.1f} cm")
 
+
+# ==========================================
+# 2. VERTICAL TAIL (VT)
+# ==========================================
 with tl2:
-    st.subheader("Vertical Tail (VTP)")
-    l_v = st.slider("Vertical Moment Arm l_V (m)", 0.40, 1.20, 0.65, step=0.05)
+    st.subheader("Vertical Tail")
+    l_v = st.slider(
+        "Vertical Moment Arm l_V (m)", 0.40, 1.20, 0.65, step=0.05,
+        help="Distance from Wing AC to Vertical Tail AC"
+    )
     v_v = st.slider("Volume Coefficient V_V", 0.02, 0.06, 0.04, step=0.005)
-    ar_v = st.slider("Vertical Fin Aspect Ratio (AR_V)", 1.0, 3.0, 1.8, step=0.1)
-
+    
     s_v = (v_v * s_req * wingspan_total) / l_v
-    b_v = math.sqrt(ar_v * s_v)
-    c_v = s_v / b_v
 
-    vt_m1, vt_m2, vt_m3 = st.columns(3)
+
+    if "ar_v" not in st.session_state:
+        st.session_state.ar_v = 1.8
+    if "b_v" not in st.session_state:
+        st.session_state.b_v = round(math.sqrt(st.session_state.ar_v * s_v), 3)
+
+    def sync_vt_from_ar():
+        st.session_state.b_v = round(math.sqrt(st.session_state.ar_v * s_v), 3)
+
+    def sync_vt_from_b():
+        st.session_state.ar_v = round((st.session_state.b_v ** 2) / s_v, 2)
+
+    col_ar_v, col_b_v = st.columns(2)
+    with col_ar_v:
+        ar_v = st.slider(
+            "Fin Aspect Ratio (AR_V)", 0.8, 4.0, step=0.1,
+            key="ar_v", on_change=sync_vt_from_ar
+        )
+    with col_b_v:
+        b_v = st.slider(
+            "Height / Span b_V (m)", 0.15, 1.20, step=0.01,
+            key="b_v", on_change=sync_vt_from_b
+        )
+
+    taper_v = st.slider("Taper Ratio λ_V (c_tip / c_root)", 0.30, 1.00, 1.00, step=0.05)
+
+
+    c_root_v = (2.0 * s_v) / (b_v * (1.0 + taper_v))
+    c_tip_v = taper_v * c_root_v
+    mac_v = (2.0 / 3.0) * c_root_v * ((1.0 + taper_v + taper_v**2) / (1.0 + taper_v))
+    
+
+    z_mac_v = (b_v / 3.0) * ((1.0 + 2.0 * taper_v) / (1.0 + taper_v))
+
+    vt_m1, vt_m2, vt_m3, vt_m4 = st.columns(4)
     vt_m1.metric("Area (S_V)", f"{s_v:.3f} m²")
-    vt_m2.metric("Span / Height (b_V)", f"{b_v * 100:.1f} cm")
-    vt_m3.metric("Mean Chord (c_V)", f"{c_v * 100:.1f} cm")
+    vt_m2.metric("Height (b_V)", f"{b_v * 100:.1f} cm")
+    vt_m3.metric("Root Chord", f"{c_root_v * 100:.1f} cm")
+    vt_m4.metric("MAC (c_V)", f"{mac_v * 100:.1f} cm")
 
+st.markdown("---")
+st.subheader("Longitudinal Static Stability Analysis")
 
-# For conceptual design, Tail Efficiency * (Lift curve ratio) * (1 - downwash) roughly equals 0.4 - 0.5 for conventional tails
 tail_effectiveness = st.slider(
-    "Tail Effectiveness Factor (eta_h * (a_t/a_w) * (1-de/da))", 
+    "Tail Effectiveness Factor η_eff = (q_t/q) * (a_t/a_w) * (1 - dε/dα)", 
     0.20, 0.70, 0.45, step=0.01, 
-    help="Approximates dynamic pressure loss and downwash effects over the tail. 0.45 is a safe conceptual baseline."
+    help="Represents dynamic pressure ratio, lift curve slope ratio, and downwash factor."
 )
 
-# X_NP = X_AC_wing + (V_H * MAC * tail_effectiveness)
-# Converting to mm by multiplying MAC by 1000
-x_np = x_ac_wing + (v_h * mac * 1000.0 * tail_effectiveness)
-true_static_margin = ((x_np - x_cg_mm) / (mac * 1000.0)) * 100.0
+mac_mm = mac * 1000.0
 
-np_col1, np_col2 = st.columns(2)
-np_col1.metric("Aircraft Neutral Point (X_NP)", f"{x_np:.1f} mm")
-np_col2.metric("True Static Margin", f"{true_static_margin:.1f} % MAC")
+# Delta_X_NP = l_H * (S_H / S_W) * eta_eff
+delta_x_np_mm = (l_h * 1000.0) * (s_h / s_req) * tail_effectiveness
+
+x_np = x_ac_wing + delta_x_np_mm
+true_static_margin = ((x_np - x_cg_mm) / mac_mm) * 100.0
+
+np_col1, np_col2, np_col3 = st.columns(3)
+np_col1.metric("Wing Aerodynamic Center (X_AC)", f"{x_ac_wing:.1f} mm")
+np_col2.metric("Aircraft Neutral Point (X_NP)", f"{x_np:.1f} mm", delta=f"+{delta_x_np_mm:.1f} mm aft shift")
+np_col3.metric("Static Margin (SM)", f"{true_static_margin:.1f} % MAC")
 
 if true_static_margin < sm_min:
-    st.error(f"Stability Hazard: True Static margin is {true_static_margin:.1f}%, below set threshold of {sm_min:.1f}%. Move CG forward (mass) or Wing/Tail aft.")
+    st.error(
+        f"Statik marjin belirlenen sınırın (%{sm_min:.1f}) altında. Ağırlık merkezi öne kaydırılmalı ya da kuyruk hacmi/kolu arttırılmalı."
+    )
 elif true_static_margin > sm_max:
-    st.warning(f"Over-Stable / High Trim Drag: True Static margin is {true_static_margin:.1f}%, above set threshold of {sm_max:.1f}%. Move CG aft (mass) or Wing forward.")
+    st.warning(
+        f"Statik marjin belirlenen sınırdan (%{sm_max:.1f}) yüksek. Yüksek trim sürtünmesi yaşanabilir, ağırlık merkezi geriye alınabilir ya da kuyruk etkisi azaltılabilir."
+    )
 else:
-    st.success(f"Stability Acceptable: True Static margin is safely inside bounds ({sm_min:.1f}% - {sm_max:.1f}%).")
-
+    st.success("Statik stabilite belirlenen sınırlar içerisinde.")
 # -------------------------------------------------------------
 # STAGE 7: DRAG BUILDUP VERIFICATION & BREAKDOWN
 # -------------------------------------------------------------
