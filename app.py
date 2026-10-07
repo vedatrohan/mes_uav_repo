@@ -473,21 +473,88 @@ with col_el1:
     
     st.metric(f"Loaded RPM @ {sim_current}A", f"{max(0, rpm_loaded):,.0f} RPM", f"Voltage Drop: -{v_drop:.2f} V", delta_color="inverse")
 
+# ---------------------------------------------------------
+# 3. ELECTRONIC COMPONENTS
+# ---------------------------------------------------------
+st.header("3. Electronic Components")
+st.subheader("Battery Configuration")
+col_bat1, col_bat2 = st.columns(2)
+with col_bat1:
+    batt_s = st.number_input("Battery Voltage (Cells / S)", min_value=1, max_value=14, value=4, step=1)
+with col_bat2:
+    batt_cap = st.number_input("Battery Capacity (mAh)", min_value=100, max_value=50000, value=5000, step=100)
 
-# --- PROPELLER COLUMN ---
+st.markdown("---")
+
+col_el1, col_el2 = st.columns(2)
+selected_motor_compatible_props = []
+
+# --- MOTOR COLUMN ---
+with col_el1:
+    st.subheader("Motor Selection")
+    motor_type = st.radio("Motor Definition", ["Database", "Custom"], horizontal=True)
+
+    active_kv = 1000
+    active_max_amp = 30.0
+    active_max_power = 400.0
+    active_ir_mohm = 50.0
+
+    if motor_type == "Database":
+        if not df_motors.empty:
+            df_motors["Display"] = df_motors["Üretici"].astype(str) + " " + \
+                                   df_motors["Model"].astype(str) + " - " + \
+                                   df_motors["KV"].astype(str) + "KV"
+            
+            motor_choice = st.selectbox("Select a Motor", df_motors["Display"].dropna().unique())
+            motor_data = df_motors[df_motors["Display"] == motor_choice].iloc[0]
+            
+            active_kv = float(motor_data.get('KV', 1000))
+            active_max_amp = float(motor_data.get('Max. Amper', 30))
+            active_max_power = float(motor_data.get('Max. Güç', 400))
+            active_ir_mohm = float(motor_data.get('İç Direnç (mOhm)', 50))
+            
+            st.info(f"**Weight:** {motor_data.get('Ağırlık', 'N/A')} g  \n"
+                    f"**Max Power:** {active_max_power} W  \n"
+                    f"**Max Amps:** {active_max_amp} A  \n"
+                    f"**Internal Res:** {active_ir_mohm} mΩ")
+            
+            prop_cols = motor_data.index[10:] 
+            valid_props = motor_data[prop_cols].dropna().astype(str).tolist()
+            selected_motor_compatible_props = [p.strip() for p in valid_props if p.strip() and p.lower() != "nan"]
+        else:
+            st.warning("Motor database is empty or could not be loaded.")
+    else:
+        active_kv = st.number_input("KV Rating", min_value=10, value=1000, step=50)
+        c_motor_weight = st.number_input("Motor Weight (g)", min_value=1.0, value=100.0, step=5.0)
+        active_max_amp = st.number_input("Max Continuous Current (A)", min_value=1.0, value=30.0, step=1.0)
+        active_max_power = st.number_input("Max Power (W)", min_value=1.0, value=400.0, step=10.0)
+        active_ir_mohm = st.number_input("Internal Resistance (mOhm)", min_value=1.0, value=50.0, step=1.0)
+
+    # --- RPM Math & Current Slider ---
+    st.markdown("**Motor RPM Performance**")
+    v_batt_nominal = batt_s * 3.7
+    rpm_empty = active_kv * v_batt_nominal
+    
+    st.metric("Empty RPM (Nominal Voltage)", f"{rpm_empty:,.0f} RPM", f"{v_batt_nominal:.1f} V")
+    
+    sim_current = st.slider("Simulate Current Draw (A)", 0.0, float(active_max_amp), value=float(active_max_amp)/2)
+    v_drop = sim_current * (active_ir_mohm / 1000.0)
+    rpm_loaded = active_kv * (v_batt_nominal - v_drop)
+    
+    st.metric(f"Loaded RPM @ {sim_current}A", f"{max(0, rpm_loaded):,.0f} RPM", f"Voltage Drop: -{v_drop:.2f} V", delta_color="inverse")
+
+
 # --- PROPELLER COLUMN ---
 with col_el2:
     st.subheader("Propeller Selection")
     prop_type = st.radio("Propeller Definition", ["Database", "Custom"], horizontal=True)
 
-    # Initialize variables for Propeller Geometry and Polynomials
     active_prop_dia_inch = 10.0
-    ct_coeffs = [0.10, -0.05, 0.0, 0.0]  
-    cp_coeffs = [0.05, -0.02, 0.0, 0.0]
+    ct_coeffs = [0.0, 0.0, 0.0, 0.100]  # a(J^3), b(J^2), c(J), d(const)
+    cp_coeffs = [0.0, 0.0, 0.0, 0.050]
 
     if prop_type == "Database":
         if not df_props.empty:
-            # Standard display format for props directly selected from the Prop DB
             df_props["Display"] = df_props["Üretici"].astype(str) + " " + \
                                   df_props["Diameter"].astype(str) + "x" + \
                                   df_props["Pitch"].astype(str)
@@ -505,38 +572,32 @@ with col_el2:
             prop_data = None
             
             if target_dia is not None and target_pitch is not None:
-                # Search the DB for matching Diameter and Pitch
                 for idx, row in df_props.iterrows():
                     try:
                         db_dia = float(row['Diameter'])
                         db_pitch = float(row['Pitch'])
-                        # Allow a tiny tolerance for float comparisons (e.g., 4.700001 vs 4.7)
                         if abs(db_dia - target_dia) < 0.05 and abs(db_pitch - target_pitch) < 0.05:
                             prop_data = row
-                            break  # Grab the first match we find
+                            break  
                     except:
                         continue
 
             if prop_data is not None:
                 active_prop_dia_inch = float(prop_data.get('Diameter', 10.0))
-                
                 st.success(f"Matched Profile: **{prop_data.get('Üretici', '')} {active_prop_dia_inch}x{prop_data.get('Pitch', '')}**")
-                st.info(f"**Diameter:** {active_prop_dia_inch}\"  \n"
-                        f"**Pitch:** {prop_data.get('Pitch', 'N/A')}\"  \n"
-                        f"**Blades:** {prop_data.get('Pal Sayısı', 'N/A')}")
                 
-                # Extract 4 parameters safely (defaults to 0.0 if cell is empty or 'd' column missing)
+                # Extract and SCALE DOWN by 1000
                 ct_coeffs = [
-                    safe_get_coef(prop_data, 'CT vs J (a)'),
-                    safe_get_coef(prop_data, 'CT vs J (b)'),
-                    safe_get_coef(prop_data, 'CT vs J (c)'),
-                    safe_get_coef(prop_data, 'CT vs J (d)')
+                    safe_get_coef(prop_data, 'CT vs J (a)') / 1000.0,
+                    safe_get_coef(prop_data, 'CT vs J (b)') / 1000.0,
+                    safe_get_coef(prop_data, 'CT vs J (c)') / 1000.0,
+                    safe_get_coef(prop_data, 'CT vs J (d)') / 1000.0
                 ]
                 cp_coeffs = [
-                    safe_get_coef(prop_data, 'CP vs J (a)'),
-                    safe_get_coef(prop_data, 'CP vs J (b)'),
-                    safe_get_coef(prop_data, 'CP vs J (c)'),
-                    safe_get_coef(prop_data, 'CP vs J (d)')
+                    safe_get_coef(prop_data, 'CP vs J (a)') / 1000.0,
+                    safe_get_coef(prop_data, 'CP vs J (b)') / 1000.0,
+                    safe_get_coef(prop_data, 'CP vs J (c)') / 1000.0,
+                    safe_get_coef(prop_data, 'CP vs J (d)') / 1000.0
                 ]
             else:
                 st.warning(f"Extracted [Dia: {target_dia}\", Pitch: {target_pitch}\"] from '{prop_choice}', but no exact match exists in the Propeller Database. Defaulting to Custom.")
@@ -548,148 +609,129 @@ with col_el2:
         c_prop_pitch = st.number_input("Pitch (inch)", min_value=1.0, value=4.5, step=0.5)
         
         st.markdown("**Thrust Coefficient ($C_T$) Curve Fits**")
-        st.caption("Format: $C_T = a + bJ + cJ^2 + dJ^3$")
+        st.caption("Format: $C_T = a J^3 + b J^2 + c J + d$")
         ct1, ct2, ct3, ct4 = st.columns(4)
-        ct_coeffs[0] = ct1.number_input("$C_T$ (a)", value=0.100, format="%.4f")
-        ct_coeffs[1] = ct2.number_input("$C_T$ (b)", value=-0.050, format="%.4f")
-        ct_coeffs[2] = ct3.number_input("$C_T$ (c)", value=0.000, format="%.4f")
-        ct_coeffs[3] = ct4.number_input("$C_T$ (d)", value=0.000, format="%.4f")
+        ct_coeffs[0] = ct1.number_input("$C_T$ (a - cubic)", value=0.0000, format="%.4f")
+        ct_coeffs[1] = ct2.number_input("$C_T$ (b - square)", value=0.0000, format="%.4f")
+        ct_coeffs[2] = ct3.number_input("$C_T$ (c - linear)", value=-0.0500, format="%.4f")
+        ct_coeffs[3] = ct4.number_input("$C_T$ (d - const)", value=0.1000, format="%.4f")
         
         st.markdown("**Power Coefficient ($C_P$) Curve Fits**")
-        st.caption("Format: $C_P = a + bJ + cJ^2 + dJ^3$")
+        st.caption("Format: $C_P = a J^3 + b J^2 + c J + d$")
         cp1, cp2, cp3, cp4 = st.columns(4)
-        cp_coeffs[0] = cp1.number_input("$C_P$ (a)", value=0.050, format="%.4f")
-        cp_coeffs[1] = cp2.number_input("$C_P$ (b)", value=-0.020, format="%.4f")
-        cp_coeffs[2] = cp3.number_input("$C_P$ (c)", value=0.000, format="%.4f")
-        cp_coeffs[3] = cp4.number_input("$C_P$ (d)", value=0.000, format="%.4f")
+        cp_coeffs[0] = cp1.number_input("$C_P$ (a - cubic)", value=0.0000, format="%.4f")
+        cp_coeffs[1] = cp2.number_input("$C_P$ (b - square)", value=0.0000, format="%.4f")
+        cp_coeffs[2] = cp3.number_input("$C_P$ (c - linear)", value=-0.0200, format="%.4f")
+        cp_coeffs[3] = cp4.number_input("$C_P$ (d - const)", value=0.0500, format="%.4f")
+
 
 # ---------------------------------------------------------
 # PERFORMANCE, FLIGHT STAGES & EFFICIENCY CURVE
 # ---------------------------------------------------------
 st.markdown("---")
 st.subheader("Propulsion & Flight Stage Analysis")
-st.markdown("Calculate the required power and evaluate efficiency across different flight regimes.")
+st.markdown("Flight speeds are automatically pulled from **Section 1: Görev Profili**.")
 
-# Flight Phase Inputs
+# Use session state speeds
+v_to = st.session_state.get("v_to", 11.0)
+v_climb = st.session_state.get("v_climb", 13.0)
+v_cruise = st.session_state.get("v_cruise", 16.0)
+
 fcol1, fcol2, fcol3 = st.columns(3)
 with fcol1:
-    v_takeoff = st.number_input("Takeoff Velocity (m/s)", value=10.0)
+    st.info(f"**Takeoff Speed:** {v_to} m/s")
     req_t_takeoff = st.number_input("Req. Thrust Takeoff (N)", value=15.0)
 with fcol2:
-    v_climb = st.number_input("Climb Velocity (m/s)", value=15.0)
+    st.info(f"**Climb Speed:** {v_climb} m/s")
     req_t_climb = st.number_input("Req. Thrust Climb (N)", value=12.0)
 with fcol3:
-    v_cruise = st.number_input("Cruise Velocity (m/s)", value=22.0)
+    st.info(f"**Cruise Speed:** {v_cruise} m/s")
     req_t_cruise = st.number_input("Req. Thrust Cruise (N)", value=6.0)
 
-# Helper functions for polynomials & aerodynamics
+# Corrected polynomial evaluator
 def calc_poly(coeffs, j):
-    return coeffs[0] + coeffs[1]*j + coeffs[2]*(j**2) + coeffs[3]*(j**3)
+    # coeffs = [a, b, c, d] for a*J^3 + b*J^2 + c*J + d
+    return coeffs[0]*(j**3) + coeffs[1]*(j**2) + coeffs[2]*j + coeffs[3]
 
-rho = 1.225 # kg/m^3
+rho = st.session_state.get("rho", 1.225)
 D_m = active_prop_dia_inch * 0.0254
 
-# Function to find RPM required to produce a specific Thrust at a specific Velocity
 def find_operating_point(V, T_req, rpm_max, ct_cf, cp_cf):
-    rpms = np.linspace(100, rpm_max, 500)
+    rpms = np.linspace(100, rpm_max, 1000)
     ns = rpms / 60.0
     
-    # Calculate J for all RPMs
     Js = V / (ns * D_m)
-    
-    # Evaluate CT and CP
     CTs = calc_poly(ct_cf, Js)
     CPs = calc_poly(cp_cf, Js)
     
-    # Filter out invalid regimes (CT < 0)
-    valid = CTs > 0
-    ns = ns[valid]
-    CTs = CTs[valid]
-    CPs = CPs[valid]
-    Js = Js[valid]
+    # Filter out invalid physical regimes (negative thrust or power)
+    valid = (CTs > 0) & (CPs > 0)
+    if not np.any(valid): return None
     
-    # Calculate Thrust array
+    ns, CTs, CPs, Js = ns[valid], CTs[valid], CPs[valid], Js[valid]
+    
     T_avail = rho * (ns**2) * (D_m**4) * CTs
     
-    # Find the index where Available Thrust is closest to Required Thrust
-    if len(T_avail) == 0 or max(T_avail) < T_req:
-        return None  # Cannot produce required thrust
+    if np.max(T_avail) < T_req:
+        return None  # Max RPM reached, can't produce required thrust
     
     idx = np.argmin(np.abs(T_avail - T_req))
-    
-    # Power and Efficiency
     P_aero = rho * (ns[idx]**3) * (D_m**5) * CPs[idx]
     eta = Js[idx] * (CTs[idx] / CPs[idx]) if CPs[idx] > 0 else 0
     
-    return {
-        "RPM": ns[idx] * 60,
-        "J": Js[idx],
-        "Power": P_aero,
-        "Efficiency": eta
-    }
+    return {"RPM": ns[idx] * 60, "J": Js[idx], "Power": P_aero, "Efficiency": eta}
 
-# Analyze the 3 Stages
 stages = {
-    "Takeoff": find_operating_point(v_takeoff, req_t_takeoff, rpm_empty, ct_coeffs, cp_coeffs),
+    "Takeoff": find_operating_point(v_to, req_t_takeoff, rpm_empty, ct_coeffs, cp_coeffs),
     "Climb": find_operating_point(v_climb, req_t_climb, rpm_empty, ct_coeffs, cp_coeffs),
     "Cruise": find_operating_point(v_cruise, req_t_cruise, rpm_empty, ct_coeffs, cp_coeffs)
 }
 
-# Display Stage Results
 rcol1, rcol2, rcol3 = st.columns(3)
 cols = [rcol1, rcol2, rcol3]
 
 for i, (stage_name, data) in enumerate(stages.items()):
     with cols[i]:
-        st.markdown(f"**{stage_name}**")
+        st.markdown(f"**{stage_name} Requirements**")
         if data is None:
             st.error(f"Cannot meet thrust. Max RPM ({rpm_empty:.0f}) reached.")
         else:
             p_color = "normal" if data["Power"] <= active_max_power else "off"
             if data["Power"] > active_max_power:
-                st.error(f"**Power Exceeded!**")
+                st.error(f"**Power Exceeded Motor Max!**")
                 
             st.metric("Req. RPM", f"{data['RPM']:,.0f} RPM")
             st.metric("Power Drawn", f"{data['Power']:.1f} W", f"Limit: {active_max_power} W", delta_color=p_color)
             st.metric("Prop Efficiency", f"{data['Efficiency']*100:.1f} %")
 
-
 # --- Plot Efficiency Curve ---
-# Generate J sweep for plotting
-j_plot = np.linspace(0.01, 1.2, 200)
+j_plot = np.linspace(0.01, 1.2, 300)
 ct_plot = calc_poly(ct_coeffs, j_plot)
 cp_plot = calc_poly(cp_coeffs, j_plot)
 
-# Filter to realistic J (until thrust becomes negative)
-valid_j = ct_plot > 0
-j_plot = j_plot[valid_j]
-ct_plot = ct_plot[valid_j]
-cp_plot = cp_plot[valid_j]
+valid_j = (ct_plot > 0) & (cp_plot > 0)
+j_plot, ct_plot, cp_plot = j_plot[valid_j], ct_plot[valid_j], cp_plot[valid_j]
 
-# Calculate Efficiency
 eta_plot = j_plot * (ct_plot / cp_plot)
 
 fig = go.Figure()
 fig.add_trace(go.Scatter(x=j_plot, y=eta_plot*100, mode='lines', name='Propeller Efficiency', line=dict(color='royalblue', width=3)))
 
-# Overlay operating points
 colors = {"Takeoff": "red", "Climb": "orange", "Cruise": "green"}
 for stage_name, data in stages.items():
     if data is not None:
         fig.add_trace(go.Scatter(
             x=[data["J"]], y=[data["Efficiency"]*100], 
-            mode='markers+text', 
-            name=stage_name,
+            mode='markers+text', name=stage_name,
             marker=dict(size=12, color=colors[stage_name], symbol='cross'),
-            text=[stage_name],
-            textposition="top center"
+            text=[stage_name], textposition="top center"
         ))
 
 fig.update_layout(
-    title="Propeller Efficiency ($\eta$) vs Advance Ratio ($J$)",
+    title=f"Propeller Efficiency ($\eta$) vs Advance Ratio ($J$) - {active_prop_dia_inch}\" Prop",
     xaxis_title="Advance Ratio ($J = V/nD$)",
     yaxis_title="Efficiency (%)",
-    yaxis_range=[0, 100]
+    yaxis_range=[0, 100], hovermode="x unified"
 )
 
 st.plotly_chart(fig, use_container_width=True)
