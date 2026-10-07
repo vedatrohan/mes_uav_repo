@@ -3,7 +3,40 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
+import regex as re
 import plotly.graph_objects as go
+
+def parse_prop_string(p_str):
+    p_str = str(p_str).upper().strip()
+    # 1. Check for explicit separators like '*' or 'X' (e.g., APC12*6, APC 10x4.5)
+    if '*' in p_str or 'X' in p_str:
+        parts = re.split(r'\*|X', p_str)
+        dia_matches = re.findall(r'\d+\.?\d*', parts[0])
+        pitch_matches = re.findall(r'\d+\.?\d*', parts[1])
+        if dia_matches and pitch_matches:
+            return float(dia_matches[-1]), float(pitch_matches[0])
+    else:
+        # 2. Check for 4-digit codes without separators (e.g., 9047, 8043, 1047)
+        nums = re.findall(r'\d+', p_str)
+        if nums:
+            num_str = nums[-1]
+            if len(num_str) == 4:
+                dia = float(num_str[:2])
+                # E.g., 8043 -> dia=80. Real diameter is 8.0
+                if dia >= 20: 
+                    dia /= 10.0
+                pitch = float(num_str[2:]) / 10.0
+                return dia, pitch
+    return None, None
+
+def safe_get_coef(row, key, default=0.0):
+    """Safely extracts coefficient, avoiding NaN or missing column errors."""
+    if key in row and pd.notna(row[key]):
+        try:
+            return float(row[key])
+        except:
+            return default
+    return default
 
 st.set_page_config(page_title="Bilkent UAV Sizing Suite", layout="wide")
 
@@ -442,17 +475,19 @@ with col_el1:
 
 
 # --- PROPELLER COLUMN ---
+# --- PROPELLER COLUMN ---
 with col_el2:
     st.subheader("Propeller Selection")
     prop_type = st.radio("Propeller Definition", ["Database", "Custom"], horizontal=True)
 
-    # Initialize variables for Propeller Geometry and Polynomials (a, b, c, d)
+    # Initialize variables for Propeller Geometry and Polynomials
     active_prop_dia_inch = 10.0
-    ct_coeffs = [0.10, -0.05, 0.0, 0.0]  # a, b, c, d
+    ct_coeffs = [0.10, -0.05, 0.0, 0.0]  
     cp_coeffs = [0.05, -0.02, 0.0, 0.0]
 
     if prop_type == "Database":
         if not df_props.empty:
+            # Standard display format for props directly selected from the Prop DB
             df_props["Display"] = df_props["Üretici"].astype(str) + " " + \
                                   df_props["Diameter"].astype(str) + "x" + \
                                   df_props["Pitch"].astype(str)
@@ -465,29 +500,46 @@ with col_el2:
             
             prop_choice = st.selectbox("Select a Propeller", prop_options)
 
-            if prop_choice in df_props["Display"].values:
-                prop_data = df_props[df_props["Display"] == prop_choice].iloc[0]
+            # SMART MATCHING: Extract numbers and find the matching row
+            target_dia, target_pitch = parse_prop_string(prop_choice)
+            prop_data = None
+            
+            if target_dia is not None and target_pitch is not None:
+                # Search the DB for matching Diameter and Pitch
+                for idx, row in df_props.iterrows():
+                    try:
+                        db_dia = float(row['Diameter'])
+                        db_pitch = float(row['Pitch'])
+                        # Allow a tiny tolerance for float comparisons (e.g., 4.700001 vs 4.7)
+                        if abs(db_dia - target_dia) < 0.05 and abs(db_pitch - target_pitch) < 0.05:
+                            prop_data = row
+                            break  # Grab the first match we find
+                    except:
+                        continue
+
+            if prop_data is not None:
                 active_prop_dia_inch = float(prop_data.get('Diameter', 10.0))
                 
+                st.success(f"Matched Profile: **{prop_data.get('Üretici', '')} {active_prop_dia_inch}x{prop_data.get('Pitch', '')}**")
                 st.info(f"**Diameter:** {active_prop_dia_inch}\"  \n"
                         f"**Pitch:** {prop_data.get('Pitch', 'N/A')}\"  \n"
                         f"**Blades:** {prop_data.get('Pal Sayısı', 'N/A')}")
                 
-                # Extract 4 parameters (Fallback to 0.0 if not in database yet)
+                # Extract 4 parameters safely (defaults to 0.0 if cell is empty or 'd' column missing)
                 ct_coeffs = [
-                    float(prop_data.get('CT vs J (a)', 0.1)),
-                    float(prop_data.get('CT vs J (b)', -0.05)),
-                    float(prop_data.get('CT vs J (c)', 0.0)),
-                    float(prop_data.get('CT vs J (d)', 0.0))  # Assuming column added to DB
+                    safe_get_coef(prop_data, 'CT vs J (a)'),
+                    safe_get_coef(prop_data, 'CT vs J (b)'),
+                    safe_get_coef(prop_data, 'CT vs J (c)'),
+                    safe_get_coef(prop_data, 'CT vs J (d)')
                 ]
                 cp_coeffs = [
-                    float(prop_data.get('CP vs J (a)', 0.05)),
-                    float(prop_data.get('CP vs J (b)', -0.02)),
-                    float(prop_data.get('CP vs J (c)', 0.0)),
-                    float(prop_data.get('CP vs J (d)', 0.0))  # Assuming column added to DB
+                    safe_get_coef(prop_data, 'CP vs J (a)'),
+                    safe_get_coef(prop_data, 'CP vs J (b)'),
+                    safe_get_coef(prop_data, 'CP vs J (c)'),
+                    safe_get_coef(prop_data, 'CP vs J (d)')
                 ]
             else:
-                st.warning(f"'{prop_choice}' lacks an exact curve profile in the DB.")
+                st.warning(f"Extracted [Dia: {target_dia}\", Pitch: {target_pitch}\"] from '{prop_choice}', but no exact match exists in the Propeller Database. Defaulting to Custom.")
         else:
             st.warning("Propeller database is empty or could not be loaded.")
 
@@ -510,7 +562,6 @@ with col_el2:
         cp_coeffs[1] = cp2.number_input("$C_P$ (b)", value=-0.020, format="%.4f")
         cp_coeffs[2] = cp3.number_input("$C_P$ (c)", value=0.000, format="%.4f")
         cp_coeffs[3] = cp4.number_input("$C_P$ (d)", value=0.000, format="%.4f")
-
 
 # ---------------------------------------------------------
 # PERFORMANCE, FLIGHT STAGES & EFFICIENCY CURVE
