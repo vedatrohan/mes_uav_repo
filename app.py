@@ -576,6 +576,7 @@ def find_operating_point(V, T_req, rpm_max, ct_cf, cp_cf):
     
     idx = np.argmin(np.abs(T_avail - T_req))
     P_aero = rho * (ns[idx]**3) * (D_m**5) * CPs[idx]
+    P_aero = P_aero / eta_motor_esc # account for losses due to motor and ESC inefficiencies
     eta = Js[idx] * (CTs[idx] / CPs[idx]) if CPs[idx] > 0 else 0
     
     return {"RPM": ns[idx] * 60, "J": Js[idx], "Power": P_aero, "Efficiency": eta}
