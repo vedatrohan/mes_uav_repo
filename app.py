@@ -673,7 +673,6 @@ with col_w1:
 
     x_le_wing = st.number_input("Wing Leading Edge Location from Nose X_LE (mm)", step=10.0, key="x_le_wing")
     x_ac_wing = x_le_wing + (0.25 * mac * 1000.0)
-    static_margin = ((x_ac_wing - x_cg_mm) / (mac * 1000.0)) * 100.0
     
     st.markdown("---")
     re_tip_threshold = st.slider("Tip Reynolds Warning Threshold", min_value=50000, max_value=300000, value=100000, step=10000)
