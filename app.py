@@ -213,6 +213,9 @@ def update_cd0_callback():
 # -------------------------------------------------------------
 # STAGE 1: MISSION PROFILE & SEGMENT DEFINITION
 # -------------------------------------------------------------
+# -------------------------------------------------------------
+# STAGE 1: MISSION PROFILE & SEGMENT DEFINITION
+# -------------------------------------------------------------
 st.header("1. Görev Profili ve Parametreler")
 
 # --- GLOBAL CONFIGURATION (Physical & Aerodynamic Bounds) ---
@@ -409,6 +412,41 @@ for idx, (col, defaults) in enumerate(zip(seg_cols, default_segments)):
             "name": defaults["name"],
             "dt": dt_val,
             "v": v_val,
+            "v_v": climb_val,
+            "mass": mass_val,
+            "n_eff": n_eff,
+            "has_payload": has_payload_val,
+        })
+
+# Map critical velocities to session_state so downstream stages don't break
+st.session_state["v_to"] = mission_profile[0]["v"]
+st.session_state["v_climb"] = mission_profile[0]["v"]
+st.session_state["climb_rate"] = max(0.1, mission_profile[0]["v_v"])
+st.session_state["v_cruise"] = mission_profile[1]["v"]
+st.session_state["n_turn"] = mission_profile[2]["n_eff"]
+
+# --- SUMMARY & CONSISTENCY CHECK ---
+st.markdown("---")
+total_sim_time = sum(s["dt"] for s in mission_profile)
+total_dist_km = sum(s["v"] * s["dt"] for s in mission_profile) / 1000.0
+
+sum_col1, sum_col2, sum_col3 = st.columns(3)
+time_delta = max_mission_time - total_sim_time
+time_alert_color = "normal" if time_delta >= 0 else "inverse"
+
+sum_col1.metric(
+    "Total Segment Time",
+    f"{total_sim_time:.0f} s",
+    f"{time_delta:.0f} s remaining in window",
+    delta_color=time_alert_color,
+)
+sum_col2.metric("Total Air Distance Traveled", f"{total_dist_km:.2f} km")
+sum_col3.metric("Search Segment Share", f"{(mission_profile[2]['dt'] / total_sim_time)*100:.1f} %")
+
+if total_sim_time > max_mission_time:
+    st.error(
+        f"Segmentlerin toplam süresi ({total_sim_time:.0f} s) belirlenen görev limitini ({max_mission_time:.0f} s) aşıyor! Süreleri revize edin."
+    )
 # -------------------------------------------------------------
 # STAGE 2: P/W CONSTRAINT ANALYSIS
 # -------------------------------------------------------------
