@@ -286,6 +286,10 @@ with col_p3:
 # -------------------------------------------------------------
 st.header("2. Master Constraint Analysis (Power-to-Weight)")
 
+eta_cruise = st.session_state.get("eta_cruise", 0.72)
+eta_climb = st.session_state.get("eta_climb", 0.65)
+eta_to = st.session_state.get("eta_to", 0.50)
+
 col_ar, col_plot = st.columns([1, 2])
 
 with col_ar:
@@ -526,16 +530,22 @@ v_to = st.session_state.get("v_to", 11.0)
 v_climb = st.session_state.get("v_climb", 13.0)
 v_cruise = st.session_state.get("v_cruise", 16.0)
 
+# In Stage 3 (Propulsion Analysis):
+w_n = target_mtow * g
+t_req_cruise_calc = float(tw_cruise * w_n)
+t_req_climb_calc = float(tw_climb * w_n)
+t_req_to_calc = float(tw_to * w_n)
+
 fcol1, fcol2, fcol3 = st.columns(3)
 with fcol1:
     st.info(f"**Takeoff Speed:** {v_to} m/s")
-    req_t_takeoff = st.number_input("Req. Thrust Takeoff (N)", value=15.0)
+    req_t_takeoff = st.number_input("Req. Thrust Takeoff (N)", value=round(t_req_to_calc, 2))
 with fcol2:
     st.info(f"**Climb Speed:** {v_climb} m/s")
-    req_t_climb = st.number_input("Req. Thrust Climb (N)", value=12.0)
+    req_t_climb = st.number_input("Req. Thrust Climb (N)", value=round(t_req_climb_calc, 2))
 with fcol3:
     st.info(f"**Cruise Speed:** {v_cruise} m/s")
-    req_t_cruise = st.number_input("Req. Thrust Cruise (N)", value=6.0)
+    req_t_cruise = st.number_input("Req. Thrust Cruise (N)", value=round(t_req_cruise_calc, 2))
 
 # Corrected polynomial evaluator
 def calc_poly(coeffs, j):
@@ -575,6 +585,22 @@ stages = {
     "Climb": find_operating_point(v_climb, req_t_climb, rpm_empty, ct_coeffs, cp_coeffs),
     "Cruise": find_operating_point(v_cruise, req_t_cruise, rpm_empty, ct_coeffs, cp_coeffs)
 }
+
+needs_rerun = False
+eta_updates = {}
+    
+stage_key_map = {"Takeoff": "eta_to", "Climb": "eta_climb", "Cruise": "eta_cruise"}
+for stage_name, key in stage_key_map.items():
+    if stages[stage_name] is not None:
+        new_eta = float(stages[stage_name]["Efficiency"])
+        # Guard against zero or NaN
+        if new_eta > 0.05:
+            old_eta = st.session_state.get(key, 0.7)
+            if abs(new_eta - old_eta) > 0.01:  # 1% tolerance prevents infinite oscillating loops
+                st.session_state[key] = round(new_eta, 3)
+                needs_rerun = True
+if needs_rerun:
+    st.rerun()
 
 rcol1, rcol2, rcol3 = st.columns(3)
 cols = [rcol1, rcol2, rcol3]
