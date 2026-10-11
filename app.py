@@ -581,7 +581,7 @@ def find_operating_point(V, T_req, rpm_max, ct_cf, cp_cf):
     return {"RPM": ns[idx] * 60, "J": Js[idx], "Power": P_aero, "Efficiency": eta}
 
 stages = {
-    "Takeoff": find_operating_point(v_to, req_t_takeoff, rpm_empty, ct_coeffs, cp_coeffs),
+    "Takeoff": find_operating_point(v_to / math.sqrt(2), req_t_takeoff, rpm_empty, ct_coeffs, cp_coeffs),
     "Climb": find_operating_point(v_climb, req_t_climb, rpm_empty, ct_coeffs, cp_coeffs),
     "Cruise": find_operating_point(v_cruise, req_t_cruise, rpm_empty, ct_coeffs, cp_coeffs)
 }
