@@ -210,243 +210,77 @@ with st.sidebar:
 
 def update_cd0_callback():
     st.session_state.cd0_active = st.session_state.temp_recalc_cd0
+
 # -------------------------------------------------------------
-# STAGE 1: MISSION PROFILE & SEGMENT DEFINITION
-# -------------------------------------------------------------
-# -------------------------------------------------------------
-# STAGE 1: MISSION PROFILE & SEGMENT DEFINITION
+# STAGE 1: MISSION PROFILE
 # -------------------------------------------------------------
 st.header("1. Görev Profili ve Parametreler")
+col_p1, col_p2, col_p3 = st.columns(3)
 
-# --- GLOBAL CONFIGURATION (Physical & Aerodynamic Bounds) ---
-with st.expander("Genel / Global Parametreler ve Limitler", expanded=True):
-    col_g1, col_g2, col_g3 = st.columns(3)
-
-    with col_g1:
-        st.subheader("Mass & Architecture")
-        target_mtow = st.number_input(
-            "Gross Takeoff Mass - MTOW (kg)",
-            value=float(st.session_state.get("target_mtow", 3.0)),
-            step=0.1,
-            key="target_mtow",
-        )
-        payload_mass = st.number_input(
-            "Payload Mass (kg)",
-            value=0.50,
-            step=0.05,
-            min_value=0.0,
-            max_value=float(target_mtow),
-            key="payload_mass",
-        )
-        empty_mass = target_mtow - payload_mass
-        st.caption(f"Post-Drop Empty Mass: **{empty_mass:.2f} kg**")
-
-        p_avionics = st.number_input(
-            "Avionics & PC Power Draw (W)",
-            value=25.0,
-            step=5.0,
-            help="Continuous base draw: companion PC (Jetson/Pi), servos, camera, FC",
-            key="p_avionics",
-        )
-
-    with col_g2:
-        st.subheader("Atmospheric Constants")
-        rho = st.number_input(
-            "Air Density ρ (kg/m³)",
-            value=1.225,
-            format="%.3f",
-            step=0.01,
-            key="rho",
-        )
-        mu_air = st.number_input(
-            "Dynamic Viscosity μ (kg/(m·s))",
-            value=1.789e-5,
-            format="%.3e",
-            key="mu_air",
-        )
-        g = st.number_input(
-            "Gravity g (m/s²)",
-            value=9.80665,
-            format="%.5f",
-            key="g",
-        )
-        max_mission_time = st.number_input(
-            "Max Mission Time Window (s)",
-            value=600.0,
-            step=30.0,
-            help="Competition hard time cap",
-            key="max_mission_time",
-        )
-
-    with col_g3:
-        st.subheader("Baseline Aero & Takeoff")
-        cd0_active = st.number_input(
-            "Parasite Drag CD0",
-            value=float(st.session_state.get("cd0_active", 0.035)),
-            format="%.4f",
-            step=0.001,
-            key="cd0_active",
-        )
-        v_stall = st.number_input(
-            "Stall Speed V_s (m/s)",
-            value=10.0,
-            step=0.5,
-            key="v_stall",
-        )
-        cl_max_est = st.number_input(
-            "Estimated CL_max",
-            value=1.40,
-            step=0.05,
-            key="cl_max_est",
-        )
-        s_g = st.number_input(
-            "Ground Run Limit S_g (m)",
-            value=20.0,
-            step=1.0,
-            key="s_g",
-        )
-        runway_friction = st.number_input(
-            "Runway Friction μ_r",
-            value=0.08,
-            step=0.01,
-            key="runway_friction",
-        )
-        cd_to = st.number_input(
-            "Takeoff CD",
-            value=0.050,
-            format="%.3f",
-            key="cd_to",
-        )
-        cl_to = st.number_input(
-            "Takeoff CL",
-            value=0.60,
-            format="%.2f",
-            key="cl_to",
-        )
-
-st.markdown("---")
-st.subheader("Görev Segmentleri (Mission Segments)")
-
-# Default setup for the 6 segments
-default_segments = [
-    {
-        "name": "1. Takeoff & Climb",
-        "dt": 35.0,
-        "v": 13.0,
-        "climb": 2.5,
-        "has_payload": True,
-        "turn_pct": 5,
-        "bank": 20.0,
-    },
-    {"name": "2. Transit In", "dt": 45.0, "v": 16.0, "climb": 0.0, "has_payload": True, "turn_pct": 10, "bank": 25.0},
-    {"name": "3. Search & Loiter", "dt": 240.0, "v": 14.5, "climb": 0.0, "has_payload": True, "turn_pct": 45, "bank": 40.0},
-    {"name": "4. Target Delivery", "dt": 30.0, "v": 13.5, "climb": -0.5, "has_payload": True, "turn_pct": 15, "bank": 30.0},
-    {"name": "5. Return (RTB)", "dt": 50.0, "v": 16.5, "climb": 0.0, "has_payload": False, "turn_pct": 10, "bank": 25.0},
-    {"name": "6. Pattern & Land", "dt": 45.0, "v": 12.0, "climb": -1.5, "has_payload": False, "turn_pct": 40, "bank": 30.0},
-]
-
-seg_cols = st.columns(len(default_segments))
-mission_profile = []
-
-for idx, (col, defaults) in enumerate(zip(seg_cols, default_segments)):
-    with col:
-        st.markdown(f"**{defaults['name']}**")
-        
-        dt_val = st.number_input(
-            f"Δt (s)",
-            value=float(defaults["dt"]),
-            step=5.0,
-            min_value=1.0,
-            key=f"seg_{idx}_dt",
-        )
-        v_val = st.number_input(
-            f"Speed (m/s)",
-            value=float(defaults["v"]),
-            step=0.5,
-            min_value=1.0,
-            key=f"seg_{idx}_v",
-        )
-        climb_val = st.number_input(
-            f"V_v (m/s)",
-            value=float(defaults["climb"]),
-            step=0.5,
-            key=f"seg_{idx}_climb",
-        )
-        
-        has_payload_val = st.checkbox(
-            "Payload Onboard?",
-            value=defaults["has_payload"],
-            key=f"seg_{idx}_payload",
-        )
-        
-        f_turn = st.slider(
-            "Turn Time %",
-            0,
-            100,
-            defaults["turn_pct"],
-            step=5,
-            key=f"seg_{idx}_turn_pct",
-            help="Percentage of segment duration spent in a banked turn",
-        ) / 100.0
-        
-        phi_deg = st.slider(
-            "Bank φ (°)",
-            0.0,
-            65.0,
-            defaults["bank"],
-            step=5.0,
-            key=f"seg_{idx}_bank",
-        )
-
-        # Kinematic calculations
-        mass_val = target_mtow if has_payload_val else empty_mass
-        phi_rad = np.radians(phi_deg)
-        cos_phi = max(np.cos(phi_rad), 0.1)
-        n_turn = 1.0 / cos_phi
-        n_eff = math.sqrt((1.0 - f_turn) * (1.0**2) + f_turn * (n_turn**2))
-        
-        st.caption(f"Mass: **{mass_val:.2f} kg**")
-        st.caption(f"Eff. Load **n: {n_eff:.2f}**")
-        
-        mission_profile.append({
-            "name": defaults["name"],
-            "dt": dt_val,
-            "v": v_val,
-            "v_v": climb_val,
-            "mass": mass_val,
-            "n_eff": n_eff,
-            "has_payload": has_payload_val,
-        })
-
-# Map critical velocities to session_state so downstream stages don't break
-st.session_state["v_to"] = mission_profile[0]["v"]
-st.session_state["v_climb"] = mission_profile[0]["v"]
-st.session_state["climb_rate"] = max(0.1, mission_profile[0]["v_v"])
-st.session_state["v_cruise"] = mission_profile[1]["v"]
-st.session_state["n_turn"] = mission_profile[2]["n_eff"]
-
-# --- SUMMARY & CONSISTENCY CHECK ---
-st.markdown("---")
-total_sim_time = sum(s["dt"] for s in mission_profile)
-total_dist_km = sum(s["v"] * s["dt"] for s in mission_profile) / 1000.0
-
-sum_col1, sum_col2, sum_col3 = st.columns(3)
-time_delta = max_mission_time - total_sim_time
-time_alert_color = "normal" if time_delta >= 0 else "inverse"
-
-sum_col1.metric(
-    "Total Segment Time",
-    f"{total_sim_time:.0f} s",
-    f"{time_delta:.0f} s remaining in window",
-    delta_color=time_alert_color,
+with col_p1:
+    st.subheader("Takeoff & Surface")
+    target_mtow = st.number_input("Target MTOW (kg)", step=0.1, key="target_mtow")
+    v_to = st.number_input("Takeoff Speed V_TO (m/s)", step=0.5, key="v_to")
+    s_g = st.number_input("Ground Run Limit S_g (m)", step=1.0, key="s_g")
+    runway_friction = st.number_input(
+    "Runway Friction Coefficient", 
+    min_value=0.0, 
+    max_value=1.0, 
+    value=0.08, 
+    step=0.01, 
+    key="runway_friction"
 )
-sum_col2.metric("Total Air Distance Traveled", f"{total_dist_km:.2f} km")
-sum_col3.metric("Search Segment Share", f"{(mission_profile[2]['dt'] / total_sim_time)*100:.1f} %")
 
-if total_sim_time > max_mission_time:
-    st.error(
-        f"Segmentlerin toplam süresi ({total_sim_time:.0f} s) belirlenen görev limitini ({max_mission_time:.0f} s) aşıyor! Süreleri revize edin."
+def update_from_bank():
+    phi_rad = np.radians(st.session_state.bank_angle)
+    # Clamp cos to avoid division by zero near 90 deg
+    cos_phi = max(np.cos(phi_rad), 1e-4)
+    st.session_state.n_turn = float(round(1.0 / cos_phi, 2))
+
+def update_from_load():
+    n = max(st.session_state.n_turn, 1.0)
+    # phi = arccos(1 / n)
+    phi_deg = np.degrees(np.arccos(1.0 / n))
+    st.session_state.bank_angle = float(round(phi_deg, 1))
+
+
+with col_p2:
+    st.subheader("Speeds & Maneuver")
+    v_cruise = st.number_input("Cruise Speed (m/s)", step=0.5, key="v_cruise")
+    v_climb = st.number_input("Climb Speed (m/s)", step=0.5, key="v_climb")
+    climb_rate = st.number_input("Rate of Climb V_v (m/s)", step=0.5, key="climb_rate")
+    climb_angle = np.degrees(np.arcsin(climb_rate / v_climb))
+    st.caption(f"Tırmanma Açısı (γ): **{climb_angle:.1f}°**")
+
+    bank_angle = st.slider(
+        "Bank Angle φ (°)",
+        min_value=0.0,
+        max_value=80.0,
+        step=1.0,
+        key="bank_angle",
+        on_change=update_from_bank
     )
+
+    n_turn = st.slider(
+        "Sustained Turn Load Factor n",
+        min_value=1.0,
+        max_value=5.75,
+        step=0.05,
+        key="n_turn",
+        on_change=update_from_load
+    )
+
+with col_p3:
+    st.subheader("Atmosphere & Aero Limits")
+    v_stall = st.number_input("Stall Speed V_s (m/s)", step=0.5, key="v_stall")
+    cl_max_est = st.number_input("Estimated CL_max", step=0.05, key="cl_max_est")
+    rho = st.number_input("Density rho (kg/m^3)", format="%.3f", key="rho")
+    mu_air = st.number_input("Dynamic Viscosity mu (kg/(m*s))", format="%.3e", key="mu_air")
+    g = st.number_input("Gravity g (m/s^2)", format="%.5f", key="g")
+    cd0_active = st.number_input("Parasite Drag CD0", format="%.4f", key="cd0_active")
+    cd_to = st.number_input("Takeoff CD (CD_to)", value=0.050, step=0.005, format="%.3f", key="cd_to")
+    cl_to = st.number_input("Takeoff CL (CL_to)", value=0.60, step=0.05, key="cl_to")
+
 # -------------------------------------------------------------
 # STAGE 2: P/W CONSTRAINT ANALYSIS
 # -------------------------------------------------------------
