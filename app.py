@@ -911,7 +911,15 @@ with tl2:
         step=0.05,
         help="Distance from Wing AC to Vertical Tail AC",
     )
-    v_v = st.slider("Volume Coefficient V_V", 0.02, 0.06, 0.04, step=0.005)
+
+    v_v = st.slider(
+        "Volume Coefficient V_V",
+        min_value=0.020,
+        max_value=0.060,
+        value=0.040,
+        step=0.005,
+        format="%.3f",
+    )
 
     s_v = (v_v * s_req * wingspan_total) / l_v
 
