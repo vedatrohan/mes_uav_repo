@@ -768,7 +768,7 @@ with mp_col4:
     st.metric(
         "Loaded / Unloaded Mass",
         f"{target_mtow:.2f} kg",
-        f"After Drop: {max(0.1, target_mtow - payload_mass):.2f} kg",
+        f"After Drop: {max(0.1, target_mtow - payload_mass_kg):.2f} kg",
     )
 
 st.markdown(
