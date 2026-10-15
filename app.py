@@ -1353,7 +1353,7 @@ st.markdown("---")
 st.subheader("Mission Energy & Battery Depletion Analysis")
 
 # --- 1. Battery Specification Controls ---
-b_col3, b_col4 = st.columns(4)
+b_col3, b_col4 = st.columns(2)
 
 with b_col3:
     reserve_soc_pct = st.slider(
