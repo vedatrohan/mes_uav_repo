@@ -1353,27 +1353,7 @@ st.markdown("---")
 st.subheader("Mission Energy & Battery Depletion Analysis")
 
 # --- 1. Battery Specification Controls ---
-b_col1, b_col2, b_col3, b_col4 = st.columns(4)
-
-with b_col1:
-    # Set default pack cell count / chemistry
-    battery_cells_s = st.number_input(
-        "Battery Series (S)", min_value=1, max_value=14, value=4, step=1, key="bat_s_count"
-    )
-    cell_nominal_v = 3.7  # LiPo nominal voltage per cell
-    battery_voltage_nom = battery_cells_s * cell_nominal_v
-    st.caption(f"Nominal Pack Voltage: **{battery_voltage_nom:.1f} V** ({battery_cells_s}S LiPo)")
-
-with b_col2:
-    battery_cap_mah = st.number_input(
-        "Stated Battery Capacity (mAh)",
-        min_value=100.0,
-        max_value=100000.0,
-        value=float(st.session_state.get("battery_capacity_mah", 5000.0)),
-        step=250.0,
-        key="bat_cap_input",
-    )
-    total_energy_wh = (battery_cap_mah / 1000.0) * battery_voltage_nom
+b_col3, b_col4 = st.columns(4)
 
 with b_col3:
     reserve_soc_pct = st.slider(
@@ -1466,7 +1446,7 @@ for seg in st.session_state.mission_segments:
         prop_eta = 0.50
 
     p_total_elec = p_prop_elec + avionics_power_w
-    avg_current_a = p_total_elec / max(battery_voltage_nom, 1.0)
+    avg_current_a = p_total_elec / max(battery_s*3.7, 1.0)
 
     # Energy spent in this segment
     spent_wh = p_total_elec * (t_sec / 3600.0)
@@ -1476,7 +1456,7 @@ for seg in st.session_state.mission_segments:
     rem_mah_before = remaining_capacity_mah
     remaining_capacity_mah -= spent_mah
     remaining_energy_wh -= spent_wh
-    current_soc_pct = max(0.0, (remaining_capacity_mah / battery_cap_mah) * 100.0)
+    current_soc_pct = max(0.0, (remaining_capacity_mah / batt_cap) * 100.0)
 
     segment_energy_records.append({
         "Segment": seg_name,
@@ -1496,7 +1476,7 @@ df_mission_energy = pd.DataFrame(segment_energy_records)
 # --- 4. Mission Summary Metrics ---
 total_spent_mah = sum(r["Capacity Spent (mAh)"] for r in segment_energy_records)
 total_spent_wh = sum(r["Energy Spent (Wh)"] for r in segment_energy_records)
-final_soc = max(0.0, (remaining_capacity_mah / battery_cap_mah) * 100.0)
+final_soc = max(0.0, (remaining_capacity_mah / batt_cap) * 100.0)
 avg_mission_current = (
     total_spent_mah / (sum(r["Duration (min)"] for r in segment_energy_records) / 60.0 * 1000.0)
     if total_spent_mah > 0
@@ -1508,7 +1488,7 @@ with m_b1:
     st.metric(
         "Total Capacity Spent",
         f"{total_spent_mah:,.0f} mAh",
-        f"{(total_spent_mah / battery_cap_mah) * 100:.1f}% used",
+        f"{(total_spent_mah / batt_cap) * 100:.1f}% used",
         delta_color="inverse",
     )
 with m_b2:
@@ -1529,7 +1509,7 @@ with m_b4:
     st.metric(
         "Avg Mission Current",
         f"{avg_mission_current:.2f} A",
-        f"Pack C-Rate: {avg_mission_current / (battery_cap_mah / 1000.0):.2f}C",
+        f"Pack C-Rate: {avg_mission_current / (batt_cap / 1000.0):.2f}C",
     )
 
 # Warnings & Status checks
