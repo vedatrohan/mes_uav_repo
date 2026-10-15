@@ -275,7 +275,7 @@ def get_velocity_dict():
 def get_effective_target_time():
     t_flight = float(st.session_state.get("target_flight_time", 8.0))
     fos = float(st.session_state.get("time_fos", 1.2))
-    return t_flight * fos
+    return t_flight / fos
 
 
 # -------------------------------------------------------------
