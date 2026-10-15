@@ -1448,7 +1448,7 @@ for seg in st.session_state.mission_segments:
         prop_eta = 0.50
 
     p_total_elec = p_prop_elec + avionics_power_w
-    avg_current_a = p_total_elec / max(battery_s*3.7, 1.0)
+    avg_current_a = p_total_elec / max(batty_s*3.7, 1.0)
 
     # Energy spent in this segment
     spent_wh = p_total_elec * (t_sec / 3600.0)
@@ -1488,7 +1488,7 @@ avg_mission_current = (
 m_b1, m_b2, m_b3, m_b4 = st.columns(4)
 with m_b1:
     st.metric(
-        "Total Capacity Spent",
+        "Total Capacity Spent"
         f"{total_spent_mah:,.0f} mAh",
         f"{(total_spent_mah / batt_cap) * 100:.1f}% used",
         delta_color="inverse",
