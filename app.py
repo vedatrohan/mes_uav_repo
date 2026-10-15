@@ -198,7 +198,7 @@ default_config = {
     "sm_range": (8.0, 15.0),
     "target_flight_time": 8,
     "time_fos" : 1.2,
-    "custom_speeds" : []
+    "custom_speeds" : {}
 }
 
 for key, val in default_config.items():
