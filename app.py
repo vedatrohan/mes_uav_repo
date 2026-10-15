@@ -1346,6 +1346,286 @@ fig_prop.update_layout(
 
 st.plotly_chart(fig_prop, use_container_width=True)
 
+# =========================================================
+# MISSION ENERGY & BATTERY DEPLETION ANALYSIS
+# =========================================================
+st.markdown("---")
+st.subheader("Mission Energy & Battery Depletion Analysis")
+
+# --- 1. Battery Specification Controls ---
+b_col1, b_col2, b_col3, b_col4 = st.columns(4)
+
+with b_col1:
+    # Set default pack cell count / chemistry
+    battery_cells_s = st.number_input(
+        "Battery Series (S)", min_value=1, max_value=14, value=4, step=1, key="bat_s_count"
+    )
+    cell_nominal_v = 3.7  # LiPo nominal voltage per cell
+    battery_voltage_nom = battery_cells_s * cell_nominal_v
+    st.caption(f"Nominal Pack Voltage: **{battery_voltage_nom:.1f} V** ({battery_cells_s}S LiPo)")
+
+with b_col2:
+    battery_cap_mah = st.number_input(
+        "Stated Battery Capacity (mAh)",
+        min_value=100.0,
+        max_value=100000.0,
+        value=float(st.session_state.get("battery_capacity_mah", 5000.0)),
+        step=250.0,
+        key="bat_cap_input",
+    )
+    total_energy_wh = (battery_cap_mah / 1000.0) * battery_voltage_nom
+
+with b_col3:
+    reserve_soc_pct = st.slider(
+        "Reserve / Min Allowed SOC (%)",
+        min_value=0.0,
+        max_value=40.0,
+        value=20.0,
+        step=5.0,
+        help="Recommended minimum 20% landing reserve for LiPo longevity.",
+    )
+    usable_energy_wh = total_energy_wh * (1.0 - (reserve_soc_pct / 100.0))
+
+with b_col4:
+    avionics_power_w = st.number_input(
+        "Avionics / Payload Base Power (W)",
+        min_value=0.0,
+        value=15.0,
+        step=5.0,
+        help="Telemetry, flight controller, receiver, and onboard computer baseline load.",
+    )
+
+# --- 2. Helper: Calculate Required Thrust for Any Mission Segment ---
+def calculate_segment_thrust(seg, v_fwd, v_vert):
+    """
+    Computes required aerodynamic thrust based on speed, climb angle,
+    mass state (loaded vs unloaded), and ground roll status.
+    """
+    # Mass determination
+    m_active = target_mtow if seg.get("loaded", True) else max(0.1, target_mtow - payload_mass_kg)
+    weight_n = m_active * g
+
+    # Lift-to-Drag ratio estimate across flight conditions
+    # (Uses active CD0, or fallback approximate L/D)
+    ld_eff = 10.0  # Cruise aerodynamic efficiency baseline
+
+    if seg.get("ground_roll", False):
+        # Takeoff ground roll: Aerodynamic drag + runway rolling friction
+        # T ~= D + mu*(W - L), simplified average ground-run demand
+        mu_r = float(st.session_state.get("runway_friction", 0.08))
+        t_req = (0.5 * weight_n / ld_eff) + (mu_r * weight_n * 0.8)
+    elif v_vert > 0.05 and v_fwd > 0.1:
+        # Steady climbing flight: T = D + W * sin(gamma) = (W / (L/D)) + W * (V_vert / V_fwd)
+        sin_gamma = np.clip(v_vert / v_fwd, 0.0, 0.9)
+        t_req = (weight_n / ld_eff) + (weight_n * sin_gamma)
+    elif v_vert < -0.05 and v_fwd > 0.1:
+        # Descent flight: Gravity aids forward flight
+        sin_gamma = np.clip(abs(v_vert) / v_fwd, 0.0, 0.9)
+        t_req = max(1.0, (weight_n / ld_eff) - (weight_n * sin_gamma))
+    else:
+        # Level flight (accounting for bank angle induced load factor)
+        bank_deg = float(seg.get("bank_angle", 0.0))
+        pct_bank = float(seg.get("pct_banked", 0.0)) / 100.0
+        n_effective = 1.0 + pct_bank * ((1.0 / max(np.cos(np.radians(bank_deg)), 0.2)) - 1.0)
+        t_req = (weight_n * n_effective) / ld_eff
+
+    return max(0.5, float(t_req))
+
+
+# --- 3. Per-Segment Power, Time & Energy Step Simulation ---
+segment_energy_records = []
+remaining_capacity_mah = battery_cap_mah
+remaining_energy_wh = total_energy_wh
+has_power_failure = False
+
+for seg in st.session_state.mission_segments:
+    sid = seg["id"]
+    seg_name = st.session_state.get(f"seg_name_{sid}", seg.get("name", f"Seg {sid}"))
+    t_min = float(st.session_state.get(f"seg_time_{sid}", seg.get("time_min", 0.0)))
+    t_sec = t_min * 60.0
+
+    # Retrieve associated speeds
+    v_fwd_label = st.session_state.get(f"seg_vfwd_{sid}", seg.get("v_forward", "V_cruise"))
+    v_vert_label = st.session_state.get(f"seg_vvert_{sid}", seg.get("v_vert", "Zero"))
+    v_fwd = float(velocity_dict.get(v_fwd_label, 16.0))
+    v_vert = float(velocity_dict.get(v_vert_label, 0.0))
+
+    # Required thrust & operating point search
+    t_req = calculate_segment_thrust(seg, v_fwd, v_vert)
+    op_point = find_operating_point(max(v_fwd, 0.5), t_req, rpm_empty, ct_coeffs, cp_coeffs)
+
+    if op_point is not None:
+        p_prop_elec = op_point["Power"]
+        prop_rpm = op_point["RPM"]
+        prop_eta = op_point["Efficiency"]
+    else:
+        # Fallback approximation if curve limits are exceeded
+        has_power_failure = True
+        p_prop_elec = (t_req * max(v_fwd, 1.0)) / max(float(st.session_state.get("eta_cruise", 0.7)), 0.1)
+        prop_rpm = rpm_empty
+        prop_eta = 0.50
+
+    p_total_elec = p_prop_elec + avionics_power_w
+    avg_current_a = p_total_elec / max(battery_voltage_nom, 1.0)
+
+    # Energy spent in this segment
+    spent_wh = p_total_elec * (t_sec / 3600.0)
+    spent_mah = (avg_current_a * (t_sec / 3600.0)) * 1000.0
+
+    # Draw down from battery
+    rem_mah_before = remaining_capacity_mah
+    remaining_capacity_mah -= spent_mah
+    remaining_energy_wh -= spent_wh
+    current_soc_pct = max(0.0, (remaining_capacity_mah / battery_cap_mah) * 100.0)
+
+    segment_energy_records.append({
+        "Segment": seg_name,
+        "Duration (min)": t_min,
+        "Req Thrust (N)": t_req,
+        "Prop RPM": prop_rpm,
+        "Total Power (W)": p_total_elec,
+        "Current Draw (A)": avg_current_a,
+        "Energy Spent (Wh)": spent_wh,
+        "Capacity Spent (mAh)": spent_mah,
+        "Ending SOC (%)": current_soc_pct,
+        "Rem. Cap (mAh)": max(0.0, remaining_capacity_mah),
+    })
+
+df_mission_energy = pd.DataFrame(segment_energy_records)
+
+# --- 4. Mission Summary Metrics ---
+total_spent_mah = sum(r["Capacity Spent (mAh)"] for r in segment_energy_records)
+total_spent_wh = sum(r["Energy Spent (Wh)"] for r in segment_energy_records)
+final_soc = max(0.0, (remaining_capacity_mah / battery_cap_mah) * 100.0)
+avg_mission_current = (
+    total_spent_mah / (sum(r["Duration (min)"] for r in segment_energy_records) / 60.0 * 1000.0)
+    if total_spent_mah > 0
+    else 0.0
+)
+
+m_b1, m_b2, m_b3, m_b4 = st.columns(4)
+with m_b1:
+    st.metric(
+        "Total Capacity Spent",
+        f"{total_spent_mah:,.0f} mAh",
+        f"{(total_spent_mah / battery_cap_mah) * 100:.1f}% used",
+        delta_color="inverse",
+    )
+with m_b2:
+    st.metric(
+        "Total Energy Spent",
+        f"{total_spent_wh:.1f} Wh",
+        f"Pack Total: {total_energy_wh:.1f} Wh",
+    )
+with m_b3:
+    soc_color = "normal" if final_soc >= reserve_soc_pct else "inverse"
+    st.metric(
+        "Remaining Battery (Final SOC)",
+        f"{max(0.0, remaining_capacity_mah):,.0f} mAh",
+        f"{final_soc:.1f}% SOC",
+        delta_color=soc_color,
+    )
+with m_b4:
+    st.metric(
+        "Avg Mission Current",
+        f"{avg_mission_current:.2f} A",
+        f"Pack C-Rate: {avg_mission_current / (battery_cap_mah / 1000.0):.2f}C",
+    )
+
+# Warnings & Status checks
+if final_soc < reserve_soc_pct:
+    st.error(
+        f"**Battery Reserve Violated!** Mission ends at **{final_soc:.1f}% SOC**, "
+        f"which is below your required **{reserve_soc_pct:.0f}%** safety reserve margin."
+    )
+elif remaining_capacity_mah <= 0:
+    st.error("**Battery Depleted Before Mission End!** Increase capacity or optimize mission segments.")
+else:
+    st.success(
+        f"**Battery Sizing Feasible:** Successfully completes mission with **{final_soc:.1f}% SOC remaining** "
+        f"(≥ {reserve_soc_pct:.0f}% reserve limit)."
+    )
+
+if has_power_failure:
+    st.warning("One or more segments required thrust outside the motor/prop valid operating regime.")
+
+# --- 5. Segment Breakdown Table & Discharge Visuals ---
+with st.expander("Detailed Segment Energy Consumption Table", expanded=True):
+    st.dataframe(
+        df_mission_energy.style.format({
+            "Duration (min)": "{:.2f}",
+            "Req Thrust (N)": "{:.2f}",
+            "Prop RPM": "{:,.0f}",
+            "Total Power (W)": "{:.1f}",
+            "Current Draw (A)": "{:.2f}",
+            "Energy Spent (Wh)": "{:.2f}",
+            "Capacity Spent (mAh)": "{:,.1f}",
+            "Ending SOC (%)": "{:.1f}%",
+            "Rem. Cap (mAh)": "{:,.0f}",
+        }),
+        use_container_width=True,
+    )
+
+# --- 6. Step-down SOC Waterfall / Depletion Plot ---
+fig_soc = go.Figure()
+
+fig_soc.add_trace(
+    go.Bar(
+        x=df_mission_energy["Segment"],
+        y=df_mission_energy["Capacity Spent (mAh)"],
+        name="Capacity Spent per Segment (mAh)",
+        marker_color="indianred",
+        text=df_mission_energy["Capacity Spent (mAh)"].apply(lambda x: f"{x:.0f} mAh"),
+        textposition="auto",
+        yaxis="y",
+    )
+)
+
+fig_soc.add_trace(
+    go.Scatter(
+        x=df_mission_energy["Segment"],
+        y=df_mission_energy["Ending SOC (%)"],
+        name="Remaining SOC (%)",
+        mode="lines+markers+text",
+        marker=dict(size=10, color="navy"),
+        line=dict(width=3, color="navy"),
+        text=df_mission_energy["Ending SOC (%)"].apply(lambda x: f"{x:.1f}%"),
+        textposition="top right",
+        yaxis="y2",
+    )
+)
+
+# Reference reserve line
+fig_soc.add_hline(
+    y=reserve_soc_pct,
+    line_dash="dash",
+    line_color="crimson",
+    annotation_text=f"Min Reserve Limit ({reserve_soc_pct:.0f}%)",
+    annotation_position="bottom left",
+    yref="y2",
+)
+
+fig_soc.update_layout(
+    title="Battery Depletion & State of Charge (SOC) Along Mission Route",
+    xaxis_title="Mission Segment",
+    yaxis=dict(title="Capacity Consumed (mAh)"),
+    yaxis2=dict(
+        title="Remaining State of Charge (%)",
+        overlaying="y",
+        side="right",
+        range=[0, 105],
+    ),
+    legend=dict(x=0.01, y=0.99, bgcolor="rgba(255,255,255,0.6)"),
+    hovermode="x unified",
+)
+
+st.plotly_chart(fig_soc, use_container_width=True)
+st.markdown("---")
+
+
+
+
+
 # -------------------------------------------------------------
 # STAGE 4: WING SIZING
 # -------------------------------------------------------------
