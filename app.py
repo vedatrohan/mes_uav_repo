@@ -195,7 +195,8 @@ default_config = {
     "eta_to": 0.50,
     "eta_motor_esc": 0.82,
     "sm_range": (8.0, 15.0),
-    "target_flight_time": 8
+    "target_flight_time": 8,
+    "time_fos" : 1.2
 }
 
 for key, val in default_config.items():
