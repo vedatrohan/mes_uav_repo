@@ -405,63 +405,31 @@ def sync_all_segments_from_global():
 
 
 def on_seg_frac_change(sid):
-    eff_t = get_effective_target_time()
-    v_map = get_velocity_dict()
-    frac = float(st.session_state[f"seg_frac_{sid}"])
-    vf_key = st.session_state[f"seg_vfwd_{sid}"]
-    vf = abs(v_map.get(vf_key, 0.0))
-    new_t = round(frac * eff_t, 2)
-    new_d = round(vf * new_t, 2)
-    st.session_state[f"seg_time_{sid}"] = float(new_t)
-    st.session_state[f"seg_dist_{sid}"] = float(new_d)
-    for seg in st.session_state.mission_segments:
-        if seg["id"] == sid:
-            seg["time_frac"] = frac
-            seg["time_m"] = float(new_t)
-            seg["distance_m"] = float(new_d)
-            break
-
+    eff_t_min = get_effective_target_time()  # in minutes
+    frac = st.session_state[f"seg_frac_{sid}"]
+    t_min = round(frac * eff_t_min, 3)
+    st.session_state[f"seg_time_{sid}"] = t_min
+    
+    # Distance (m) = Speed (m/s) * Time (s)
+    v_fwd = velocity_dict.get(st.session_state[f"seg_vfwd_{sid}"], 0.0)
+    st.session_state[f"seg_dist_{sid}"] = round(v_fwd * (t_min * 60.0), 1)
 
 def on_seg_time_change(sid):
-    eff_t = get_effective_target_time()
-    v_map = get_velocity_dict()
-    new_t = float(st.session_state[f"seg_time_{sid}"])
-    vf_key = st.session_state[f"seg_vfwd_{sid}"]
-    vf = abs(v_map.get(vf_key, 0.0))
-    new_frac = round(new_t / eff_t, 4) if eff_t > 0 else 0.0
-    new_d = round(vf * new_t, 2)
-    st.session_state[f"seg_frac_{sid}"] = float(new_frac)
-    st.session_state[f"seg_dist_{sid}"] = float(new_d)
-    for seg in st.session_state.mission_segments:
-        if seg["id"] == sid:
-            seg["time_frac"] = float(new_frac)
-            seg["time_m"] = new_t
-            seg["distance_m"] = float(new_d)
-            break
-
+    eff_t_min = max(get_effective_target_time(), 1e-4)
+    t_min = st.session_state[f"seg_time_{sid}"]
+    st.session_state[f"seg_frac_{sid}"] = round(t_min / eff_t_min, 4)
+    
+    v_fwd = velocity_dict.get(st.session_state[f"seg_vfwd_{sid}"], 0.0)
+    st.session_state[f"seg_dist_{sid}"] = round(v_fwd * (t_min * 60.0), 1)
 
 def on_seg_dist_change(sid):
-    eff_t = get_effective_target_time()
-    v_map = get_velocity_dict()
-    new_d = float(st.session_state[f"seg_dist_{sid}"])
-    vf_key = st.session_state[f"seg_vfwd_{sid}"]
-    vf = abs(v_map.get(vf_key, 0.0))
-    if vf > 1e-6:
-        new_t = round(new_d / vf, 2)
-        new_frac = round(new_t / eff_t, 4) if eff_t > 0 else 0.0
-        st.session_state[f"seg_time_{sid}"] = float(new_t)
-        st.session_state[f"seg_frac_{sid}"] = float(new_frac)
-        for seg in st.session_state.mission_segments:
-            if seg["id"] == sid:
-                seg["time_frac"] = float(new_frac)
-                seg["time_m"] = float(new_t)
-                seg["distance_m"] = new_d
-                break
-    else:
-        st.warning(
-            f"Segment forward velocity ({vf_key}) is 0 m/s; distance cannot drive time."
-        )
-
+    v_fwd = velocity_dict.get(st.session_state[f"seg_vfwd_{sid}"], 0.0)
+    if v_fwd > 0:
+        d_m = st.session_state[f"seg_dist_{sid}"]
+        t_min = (d_m / v_fwd) / 60.0
+        st.session_state[f"seg_time_{sid}"] = round(t_min, 3)
+        eff_t_min = max(get_effective_target_time(), 1e-4)
+        st.session_state[f"seg_frac_{sid}"] = round(t_min / eff_t_min, 4)
 
 def on_seg_vfwd_change(sid):
     v_map = get_velocity_dict()
@@ -695,7 +663,6 @@ def update_from_load():
 
 with col_p2:
     st.markdown("**Climb & Maneuver Limits**")
-    # Safe clamping for arcsin to prevent domain crash when climb_rate > v_climb
     climb_ratio = np.clip(climb_rate / v_climb, -1.0, 1.0)
     climb_angle = np.degrees(np.arcsin(climb_ratio))
     if climb_rate >= v_climb:
@@ -742,9 +709,9 @@ st.subheader("1.3 Mission Properties & Segments Builder")
 mp_col1, mp_col2, mp_col3, mp_col4 = st.columns(4)
 with mp_col1:
     target_flight_time = st.number_input(
-        "Target Flight Time Goal (s)",
-        min_value=10.0,
-        step=10.0,
+        "Maximum Flight Time Limit (min)",
+        min_value=1.0,
+        step=1.0,
         key="target_flight_time",
         on_change=sync_all_segments_from_global,
     )
@@ -757,12 +724,14 @@ with mp_col2:
         key="time_fos",
         on_change=sync_all_segments_from_global,
     )
-effective_target_time = get_effective_target_time()
+
+effective_target_time_min = get_effective_target_time()  # in minutes
+
 with mp_col3:
     st.metric(
         "Effective Target Time",
-        f"{effective_target_time:.1f} s",
-        f"{effective_target_time / 60.0:.2f} min",
+        f"{effective_target_time_min:.2f} min",
+        f"{effective_target_time_min * 60.0:.0f} s",
     )
 with mp_col4:
     st.metric(
@@ -841,10 +810,11 @@ for idx, seg in enumerate(list(st.session_state.mission_segments)):
                 args=(sid,),
             )
         with r2_c2:
-            seg["time_m"] = st.number_input(
-                "Time (s)",
+            # Displays and binds in MINUTES
+            seg["time_min"] = st.number_input(
+                "Time (min)",
                 min_value=0.0,
-                step=1.0,
+                step=0.05,
                 format="%.2f",
                 key=f"seg_time_{sid}",
                 on_change=on_seg_time_change,
@@ -854,8 +824,8 @@ for idx, seg in enumerate(list(st.session_state.mission_segments)):
             seg["distance_m"] = st.number_input(
                 "Distance (m)",
                 min_value=0.0,
-                step=10.0,
-                format="%.2f",
+                step=50.0,
+                format="%.1f",
                 key=f"seg_dist_{sid}",
                 on_change=on_seg_dist_change,
                 args=(sid,),
@@ -885,9 +855,9 @@ with btn_col1:
         add_mission_segment()
         st.rerun()
 
-total_frac_sum = sum(s["time_frac"] for s in st.session_state.mission_segments)
-total_mission_time_m = sum(s["time_m"] for s in st.session_state.mission_segments)
-total_mission_dist_m = sum(s["distance_m"] for s in st.session_state.mission_segments)
+total_frac_sum = sum(s.get("time_frac", 0.0) for s in st.session_state.mission_segments)
+total_mission_time_min = sum(st.session_state.get(f"seg_time_{s['id']}", 0.0) for s in st.session_state.mission_segments)
+total_mission_dist_m = sum(st.session_state.get(f"seg_dist_{s['id']}", 0.0) for s in st.session_state.mission_segments)
 
 with btn_col2:
     if st.button("Normalize Time Fractions to 1.0", use_container_width=True):
@@ -900,18 +870,15 @@ with btn_col2:
             st.rerun()
 
 with btn_col3:
+    status_text = (
+        f"Total Fraction = **{total_frac_sum:.3f}** ({total_frac_sum * 100:.1f}%) | "
+        f"Total Time: **{total_mission_time_min:.2f} min** ({total_mission_time_min * 60.0:.0f} s) | "
+        f"Total Distance: **{total_mission_dist_m:,.1f} m**"
+    )
     if abs(total_frac_sum - 1.0) > 0.01:
-        st.warning(
-            f"Total Time Fraction = **{total_frac_sum:.3f}** ({total_frac_sum * 100:.1f}% of Eff. Target Time) | "
-            f"Scheduled Time: **{total_mission_time_m:.1f} s** ({total_mission_time_m / 60.0:.2f} min) | "
-            f"Total Distance: **{total_mission_dist_m:,.1f} m**"
-        )
+        st.warning(status_text)
     else:
-        st.success(
-            f"Total Time Fraction = **{total_frac_sum:.3f}** (100% of Eff. Target Time) | "
-            f"Scheduled Time: **{total_mission_time_m:.1f} s** ({total_mission_time_m / 60.0:.2f} min) | "
-            f"Total Distance: **{total_mission_dist_m:,.1f} m**"
-        )
+        st.success(status_text)
 # -------------------------------------------------------------
 # STAGE 2: P/W CONSTRAINT ANALYSIS
 # -------------------------------------------------------------
