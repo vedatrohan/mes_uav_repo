@@ -179,6 +179,7 @@ default_config = {
     "v_cruise": 16.0,
     "v_climb": 13.0,
     "climb_rate": 3.0,
+    "v_descent" : 3.0,
     "bank_angle": 45.0,
     "n_turn": 1.41,
     "v_stall": 10.0,
