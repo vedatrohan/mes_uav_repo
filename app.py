@@ -1008,6 +1008,8 @@ with col_bat1:
 with col_bat2:
     batt_cap = st.number_input("Battery Capacity (mAh)", min_value=100, max_value=50000, value=5000, step=100)
 
+total_energy_wh = batt_cap/1000 * batt_s*3.7
+
 st.markdown("---")
 
 col_el1, col_el2 = st.columns(2)
