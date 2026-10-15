@@ -69,7 +69,6 @@ def load_gsheet_csv(sheet_id, gid, header_row=0):
 df_motors = load_gsheet_csv(database_sheet_id, motor_sheet_gid, header_row=2)
 df_props = load_gsheet_csv(database_sheet_id, propeller_sheet_gid, header_row=1)
 
-
 @st.cache_data(ttl=60)
 def load_and_clean_mass_table(sheet_id: str, gid: str):
     url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
@@ -103,12 +102,15 @@ def load_and_clean_mass_table(sheet_id: str, gid: str):
             .replace(" ", "")
         )
 
-    urun_col, weight_col, x_col, y_col, z_col = None, None, None, None, None
+    urun_col, kategori_col, weight_col = None, None, None
+    x_col, y_col, z_col = None, None, None
 
     for col in df.columns:
         norm = normalize_str(col)
         if any(k in norm for k in ["urun", "item", "part"]):
             urun_col = col
+        elif any(k in norm for k in ["kategori", "category"]):
+            kategori_col = col
         elif any(k in norm for k in ["agirlik", "mass", "weight"]):
             weight_col = col
         elif norm.startswith("x"):
@@ -119,7 +121,9 @@ def load_and_clean_mass_table(sheet_id: str, gid: str):
             z_col = col
 
     if not weight_col or not urun_col:
-        raise KeyError(f"Zorunlu sütunlar bulunamadı. Mevcut sütunlar: {list(df.columns)}")
+        raise KeyError(
+            f"Zorunlu sütunlar bulunamadı. Mevcut sütunlar: {list(df.columns)}"
+        )
 
     df = df[df[urun_col].notna()]
     df = df[~df[urun_col].astype(str).str.contains("Toplam|Total", case=False)]
@@ -136,6 +140,8 @@ def load_and_clean_mass_table(sheet_id: str, gid: str):
             )
 
     rename_map = {urun_col: "Ürün", weight_col: "Ağırlık(gr)"}
+    if kategori_col:
+        rename_map[kategori_col] = "Kategori"
     if x_col:
         rename_map[x_col] = "X (mm)"
     if y_col:
@@ -146,32 +152,50 @@ def load_and_clean_mass_table(sheet_id: str, gid: str):
 
     return df
 
-# -------------------------------------------------------------
-# MASS SYNC & FALLBACK DEFAULTS
-# -------------------------------------------------------------
-# Define fallbacks first so they are never undefined
+# Fallbacks
 live_mtow_kg = 3.0  # fallback manual weight in kg
-x_cg_mm = 250.0     # fallback CG in mm
+payload_mass_kg = 0.5  # fallback payload mass in kg
+x_cg_mm = 250.0  # fallback CG in mm
 use_live_sheet = False
 
 try:
-    df_mass = load_and_clean_mass_table(design_sheet_id, design_sheet_gid)
-    total_mass_gr = df_mass["Ağırlık(gr)"].sum()
-    if total_mass_gr > 0:
-        live_mtow_kg = total_mass_gr / 1000.0
-        if "X (mm)" in df_mass.columns:
-            total_moment_x = (df_mass["Ağırlık(gr)"] * df_mass["X (mm)"]).sum()
-            x_cg_mm = total_moment_x / total_mass_gr
+  df_mass = load_and_clean_mass_table(design_sheet_id, design_sheet_gid)
+  total_mass_gr = df_mass["Ağırlık(gr)"].sum()
 
-        st.sidebar.success("Mass table synced from Drive.")
-        st.sidebar.metric("Live MTOW", f"{live_mtow_kg:.3f} kg")
-        st.sidebar.metric("Longitudinal CG (from Nose)", f"{x_cg_mm:.1f} mm")
-        use_live_sheet = True
-    else:
-        st.sidebar.warning("Mass table is empty (sum = 0). Using manual defaults.")
+  if total_mass_gr > 0:
+    live_mtow_kg = total_mass_gr / 1000.0
+
+    if "X (mm)" in df_mass.columns:
+      total_moment_x = (df_mass["Ağırlık(gr)"] * df_mass["X (mm)"]).sum()
+      x_cg_mm = total_moment_x / total_mass_gr
+
+    # --- Extract Payload Mass ---
+    if "Kategori" in df_mass.columns:
+      # Normalize categories to be robust against turkish characters and casing
+      norm_categories = (
+          df_mass["Kategori"]
+          .astype(str)
+          .str.lower()
+          .str.replace("ı", "i")
+          .str.replace("ü", "u")
+          .str.strip()
+      )
+
+      # Filter for 'faydali yuk' or 'payload'
+      payload_mask = norm_categories.str.contains("faydali yuk|payload", regex=True)
+      payload_mass_gr = df_mass.loc[payload_mask, "Ağırlık(gr)"].sum()
+      payload_mass_kg = payload_mass_gr / 1000.0
+
+    st.sidebar.success("Mass table synced from Drive.")
+    st.sidebar.metric("Live MTOW", f"{live_mtow_kg:.3f} kg")
+    st.sidebar.metric("Payload Mass", f"{payload_mass_kg:.3f} kg")
+    st.sidebar.metric("Longitudinal CG (from Nose)", f"{x_cg_mm:.1f} mm")
+    use_live_sheet = True
+  else:
+    st.sidebar.warning("Mass table is empty (sum = 0). Using manual defaults.")
 except Exception as e:
-    st.sidebar.warning(f"Could not load live sheet: {e}")
-    st.sidebar.info("Falling back to manual weights.")
+  st.sidebar.warning(f"Could not load live sheet: {e}")
+  st.sidebar.info("Falling back to manual weights.")
 
 # -------------------------------------------------------------
 # CONFIGURATION & STATE INITIALIZATION
@@ -647,14 +671,6 @@ col_p1, col_p2, col_p3 = st.columns(3)
 with col_p1:
     st.markdown("**Weights & Surface**")
     target_mtow = st.number_input("Target MTOW (kg)", min_value=0.1, step=0.1, key="target_mtow")
-    payload_mass = st.number_input(
-        "Droppable Load / Payload Mass (kg)",
-        min_value=0.0,
-        max_value=float(target_mtow) * 0.95,
-        step=0.05,
-        key="payload_mass",
-        help="Subtracted from MTOW on mission segments where 'Loaded' is unchecked.",
-    )
     s_g = st.number_input("Ground Run Limit S_g (m)", min_value=1.0, step=1.0, key="s_g")
     runway_friction = st.number_input(
         "Runway Friction Coefficient",
