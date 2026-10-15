@@ -146,9 +146,12 @@ def load_and_clean_mass_table(sheet_id: str, gid: str):
 
     return df
 
-
-live_mtow_kg = 3.0
-x_cg_mm = 400.0
+# -------------------------------------------------------------
+# MASS SYNC & FALLBACK DEFAULTS
+# -------------------------------------------------------------
+# Define fallbacks first so they are never undefined
+live_mtow_kg = 3.0  # fallback manual weight in kg
+x_cg_mm = 250.0     # fallback CG in mm
 use_live_sheet = False
 
 try:
@@ -160,16 +163,18 @@ try:
             total_moment_x = (df_mass["Ağırlık(gr)"] * df_mass["X (mm)"]).sum()
             x_cg_mm = total_moment_x / total_mass_gr
 
-    st.sidebar.success("Mass table synced from Drive.")
-    st.sidebar.metric("Live MTOW", f"{live_mtow_kg:.3f} kg")
-    st.sidebar.metric("Longitudinal CG (from Nose)", f"{x_cg_mm:.1f} mm")
-    use_live_sheet = True
+        st.sidebar.success("Mass table synced from Drive.")
+        st.sidebar.metric("Live MTOW", f"{live_mtow_kg:.3f} kg")
+        st.sidebar.metric("Longitudinal CG (from Nose)", f"{x_cg_mm:.1f} mm")
+        use_live_sheet = True
+    else:
+        st.sidebar.warning("Mass table is empty (sum = 0). Using manual defaults.")
 except Exception as e:
     st.sidebar.warning(f"Could not load live sheet: {e}")
     st.sidebar.info("Falling back to manual weights.")
 
 # -------------------------------------------------------------
-# CONFIGURATION & STATE
+# CONFIGURATION & STATE INITIALIZATION
 # -------------------------------------------------------------
 default_config = {
     "target_mtow": float(live_mtow_kg),
@@ -179,7 +184,7 @@ default_config = {
     "v_cruise": 16.0,
     "v_climb": 13.0,
     "climb_rate": 3.0,
-    "v_descent" : 3.0,
+    "v_descent": 3.0,
     "bank_angle": 45.0,
     "n_turn": 1.41,
     "v_stall": 10.0,
@@ -196,40 +201,66 @@ default_config = {
     "eta_to": 0.50,
     "eta_motor_esc": 0.82,
     "sm_range": (8.0, 15.0),
-    "target_flight_time": 8,
-    "time_fos" : 1.2,
-    "custom_speeds" : {}
+    "target_flight_time": 8.0,
+    "time_fos": 1.2,
+    "custom_speeds": {},
 }
 
+# Ensure every default key is guaranteed in st.session_state
 for key, val in default_config.items():
     if key not in st.session_state:
         st.session_state[key] = val
 
+# -------------------------------------------------------------
+# HELPER FUNCTIONS
+# -------------------------------------------------------------
 def get_velocity_dict():
     """Returns the complete dictionary of defined generic speeds (m/s)."""
+    # Use st.session_state.get() with fallback defaults to prevent AttributeErrors
     v_dict = {
         "Zero": 0.0,
-        "V_stall": float(st.session_state.v_stall),
-        "V_to": float(st.session_state.v_to),
-        "V_to_avg": round(float(st.session_state.v_to) / math.sqrt(2.0), 3),
-        "V_climb": float(st.session_state.v_climb),
-        "V_cruise": float(st.session_state.v_cruise),
-        "V_vert_climb": float(st.session_state.climb_rate),
-        "V_descent": float(st.session_state.v_descent),
+        "V_stall": float(st.session_state.get("v_stall", 10.0)),
+        "V_to": float(st.session_state.get("v_to", 11.0)),
+        "V_to_avg": round(float(st.session_state.get("v_to", 11.0)) / math.sqrt(2.0), 3),
+        "V_climb": float(st.session_state.get("v_climb", 13.0)),
+        "V_cruise": float(st.session_state.get("v_cruise", 16.0)),
+        "V_vert_climb": float(st.session_state.get("climb_rate", 3.0)),
+        "V_descent": float(st.session_state.get("v_descent", 3.0)),
     }
-    for k, v in st.session_state.custom_speeds.items():
-        v_dict[k] = float(v)
+
+    # Safe retrieval of custom_speeds regardless of whether it's dict, list, or missing
+    custom = st.session_state.get("custom_speeds", {})
+    if isinstance(custom, dict):
+        for k, v in custom.items():
+            try:
+                v_dict[str(k)] = float(v)
+            except (ValueError, TypeError):
+                continue
+    elif isinstance(custom, list):
+        # Handles case where UI component saved it as list of tuples or dicts
+        for item in custom:
+            if isinstance(item, dict) and "name" in item and "value" in item:
+                try:
+                    v_dict[str(item["name"])] = float(item["value"])
+                except (ValueError, TypeError):
+                    continue
+
     return v_dict
 
 
 def get_effective_target_time():
-    return float(st.session_state.target_flight_time) * float(st.session_state.time_fos)
+    t_flight = float(st.session_state.get("target_flight_time", 8.0))
+    fos = float(st.session_state.get("time_fos", 1.2))
+    return t_flight * fos
 
 
-# Initialize default mission segments if not present
+# -------------------------------------------------------------
+# MISSION SEGMENTS INITIALIZATION
+# -------------------------------------------------------------
 if "mission_segments" not in st.session_state:
     eff_t0 = get_effective_target_time()
     v_map0 = get_velocity_dict()
+
     default_specs = [
         {
             "id": 0,
@@ -304,6 +335,7 @@ if "mission_segments" not in st.session_state:
             "ground_roll": False,
         },
     ]
+
     for seg in default_specs:
         t_s = round(seg["time_frac"] * eff_t0, 2)
         vf = abs(v_map0.get(seg["v_forward"], 0.0))
@@ -311,6 +343,7 @@ if "mission_segments" not in st.session_state:
         seg["time_s"] = t_s
         seg["distance_m"] = d_m
         sid = seg["id"]
+
         st.session_state[f"seg_name_{sid}"] = seg["name"]
         st.session_state[f"seg_vfwd_{sid}"] = seg["v_forward"]
         st.session_state[f"seg_vvert_{sid}"] = seg["v_vert"]
@@ -323,8 +356,7 @@ if "mission_segments" not in st.session_state:
         st.session_state[f"seg_loaded_{sid}"] = bool(seg["loaded"])
         st.session_state[f"seg_ground_{sid}"] = bool(seg["ground_roll"])
 
-    st.session_state.mission_segments = default_specs
-
+    st.session_state["mission_segments"] = default_specs
 
 # Callbacks for mission segment synchronization
 def sync_all_segments_from_global():
