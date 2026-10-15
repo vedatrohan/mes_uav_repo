@@ -1416,7 +1416,7 @@ def calculate_segment_thrust(seg, v_fwd, v_vert):
 
 # --- 3. Per-Segment Power, Time & Energy Step Simulation ---
 segment_energy_records = []
-remaining_capacity_mah = battery_cap_mah
+remaining_capacity_mah = batt_cap
 remaining_energy_wh = total_energy_wh
 has_power_failure = False
 
