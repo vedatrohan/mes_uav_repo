@@ -1448,7 +1448,7 @@ for seg in st.session_state.mission_segments:
         prop_eta = 0.50
 
     p_total_elec = p_prop_elec + avionics_power_w
-    avg_current_a = p_total_elec / max(batty_s*3.7, 1.0)
+    avg_current_a = p_total_elec / max(batt_s*3.7, 1.0)
 
     # Energy spent in this segment
     spent_wh = p_total_elec * (t_sec / 3600.0)
