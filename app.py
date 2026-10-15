@@ -340,7 +340,7 @@ if "mission_segments" not in st.session_state:
         t_s = round(seg["time_frac"] * eff_t0, 2)
         vf = abs(v_map0.get(seg["v_forward"], 0.0))
         d_m = round(vf * t_s, 2)
-        seg["time_s"] = t_s
+        seg["time_m"] = t_s
         seg["distance_m"] = d_m
         sid = seg["id"]
 
@@ -348,7 +348,7 @@ if "mission_segments" not in st.session_state:
         st.session_state[f"seg_vfwd_{sid}"] = seg["v_forward"]
         st.session_state[f"seg_vvert_{sid}"] = seg["v_vert"]
         st.session_state[f"seg_frac_{sid}"] = float(seg["time_frac"])
-        st.session_state[f"seg_time_{sid}"] = float(seg["time_s"])
+        st.session_state[f"seg_time_{sid}"] = float(seg["time_m"])
         st.session_state[f"seg_dist_{sid}"] = float(seg["distance_m"])
         st.session_state[f"seg_pbank_{sid}"] = float(seg["pct_banked"])
         st.session_state[f"seg_bank_{sid}"] = float(seg["bank_angle"])
@@ -376,7 +376,7 @@ def sync_all_segments_from_global():
         st.session_state[f"seg_time_{sid}"] = float(new_t)
         st.session_state[f"seg_dist_{sid}"] = float(new_d)
         seg["time_frac"] = frac
-        seg["time_s"] = float(new_t)
+        seg["time_m"] = float(new_t)
         seg["distance_m"] = float(new_d)
 
 
@@ -393,7 +393,7 @@ def on_seg_frac_change(sid):
     for seg in st.session_state.mission_segments:
         if seg["id"] == sid:
             seg["time_frac"] = frac
-            seg["time_s"] = float(new_t)
+            seg["time_m"] = float(new_t)
             seg["distance_m"] = float(new_d)
             break
 
@@ -411,7 +411,7 @@ def on_seg_time_change(sid):
     for seg in st.session_state.mission_segments:
         if seg["id"] == sid:
             seg["time_frac"] = float(new_frac)
-            seg["time_s"] = new_t
+            seg["time_m"] = new_t
             seg["distance_m"] = float(new_d)
             break
 
@@ -430,7 +430,7 @@ def on_seg_dist_change(sid):
         for seg in st.session_state.mission_segments:
             if seg["id"] == sid:
                 seg["time_frac"] = float(new_frac)
-                seg["time_s"] = float(new_t)
+                seg["time_m"] = float(new_t)
                 seg["distance_m"] = new_d
                 break
     else:
@@ -468,7 +468,7 @@ def add_mission_segment():
         "v_forward": "V_cruise",
         "v_vert": "Zero",
         "time_frac": frac,
-        "time_s": t_s,
+        "time_m": t_s,
         "distance_m": d_m,
         "pct_banked": 0.0,
         "bank_angle": 0.0,
@@ -480,7 +480,7 @@ def add_mission_segment():
     st.session_state[f"seg_vfwd_{sid}"] = new_seg["v_forward"]
     st.session_state[f"seg_vvert_{sid}"] = new_seg["v_vert"]
     st.session_state[f"seg_frac_{sid}"] = float(new_seg["time_frac"])
-    st.session_state[f"seg_time_{sid}"] = float(new_seg["time_s"])
+    st.session_state[f"seg_time_{sid}"] = float(new_seg["time_m"])
     st.session_state[f"seg_dist_{sid}"] = float(new_seg["distance_m"])
     st.session_state[f"seg_pbank_{sid}"] = float(new_seg["pct_banked"])
     st.session_state[f"seg_bank_{sid}"] = float(new_seg["bank_angle"])
@@ -756,7 +756,7 @@ with mp_col4:
     )
 
 st.markdown(
-    "**Mission Segments** *(Edit **Time Fraction**, **Time (s)**, or **Distance (m)** — they automatically sync two-way based on the chosen Forward Velocity)*"
+    "**Mission Segments** *(Edit **Time Fraction**, **Time (min)**, or **Distance (m)**)*"
 )
 
 for idx, seg in enumerate(list(st.session_state.mission_segments)):
@@ -825,7 +825,7 @@ for idx, seg in enumerate(list(st.session_state.mission_segments)):
                 args=(sid,),
             )
         with r2_c2:
-            seg["time_s"] = st.number_input(
+            seg["time_m"] = st.number_input(
                 "Time (s)",
                 min_value=0.0,
                 step=1.0,
@@ -870,11 +870,11 @@ with btn_col1:
         st.rerun()
 
 total_frac_sum = sum(s["time_frac"] for s in st.session_state.mission_segments)
-total_mission_time_s = sum(s["time_s"] for s in st.session_state.mission_segments)
+total_mission_time_m = sum(s["time_m"] for s in st.session_state.mission_segments)
 total_mission_dist_m = sum(s["distance_m"] for s in st.session_state.mission_segments)
 
 with btn_col2:
-    if st.button("⚖️ Normalize Time Fractions to 1.0", use_container_width=True):
+    if st.button("Normalize Time Fractions to 1.0", use_container_width=True):
         if total_frac_sum > 0:
             for s in st.session_state.mission_segments:
                 sid = s["id"]
@@ -887,13 +887,13 @@ with btn_col3:
     if abs(total_frac_sum - 1.0) > 0.01:
         st.warning(
             f"Total Time Fraction = **{total_frac_sum:.3f}** ({total_frac_sum * 100:.1f}% of Eff. Target Time) | "
-            f"Scheduled Time: **{total_mission_time_s:.1f} s** ({total_mission_time_s / 60.0:.2f} min) | "
+            f"Scheduled Time: **{total_mission_time_m:.1f} s** ({total_mission_time_m / 60.0:.2f} min) | "
             f"Total Distance: **{total_mission_dist_m:,.1f} m**"
         )
     else:
         st.success(
             f"Total Time Fraction = **{total_frac_sum:.3f}** (100% of Eff. Target Time) | "
-            f"Scheduled Time: **{total_mission_time_s:.1f} s** ({total_mission_time_s / 60.0:.2f} min) | "
+            f"Scheduled Time: **{total_mission_time_m:.1f} s** ({total_mission_time_m / 60.0:.2f} min) | "
             f"Total Distance: **{total_mission_dist_m:,.1f} m**"
         )
 # -------------------------------------------------------------
@@ -1245,9 +1245,7 @@ with fcol3:
 def calc_poly(coeffs, j):
     return coeffs[0] * (j**3) + coeffs[1] * (j**2) + coeffs[2] * j + coeffs[3]
 
-
 D_m = active_prop_dia_inch * 0.0254
-
 
 def find_operating_point(V, T_req, rpm_max, ct_cf, cp_cf):
     if rpm_max <= 100 or D_m <= 0:
