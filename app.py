@@ -201,6 +201,278 @@ for key, val in default_config.items():
     if key not in st.session_state:
         st.session_state[key] = val
 
+def get_velocity_dict():
+    """Returns the complete dictionary of defined generic speeds (m/s)."""
+    v_dict = {
+        "Zero": 0.0,
+        "V_stall": float(st.session_state.v_stall),
+        "V_to": float(st.session_state.v_to),
+        "V_to_avg": round(float(st.session_state.v_to) / math.sqrt(2.0), 3),
+        "V_climb": float(st.session_state.v_climb),
+        "V_cruise": float(st.session_state.v_cruise),
+        "V_vert_climb": float(st.session_state.climb_rate),
+        "V_descent": float(st.session_state.v_descent),
+    }
+    for k, v in st.session_state.custom_speeds.items():
+        v_dict[k] = float(v)
+    return v_dict
+
+
+def get_effective_target_time():
+    return float(st.session_state.target_flight_time) * float(st.session_state.time_fos)
+
+
+# Initialize default mission segments if not present
+if "mission_segments" not in st.session_state:
+    eff_t0 = get_effective_target_time()
+    v_map0 = get_velocity_dict()
+    default_specs = [
+        {
+            "id": 0,
+            "name": "Takeoff",
+            "v_forward": "V_to_avg",
+            "v_vert": "Zero",
+            "time_frac": 0.05,
+            "pct_banked": 0.0,
+            "bank_angle": 0.0,
+            "altitude": 0.0,
+            "loaded": True,
+            "ground_roll": True,
+        },
+        {
+            "id": 1,
+            "name": "Climb",
+            "v_forward": "V_climb",
+            "v_vert": "V_vert_climb",
+            "time_frac": 0.15,
+            "pct_banked": 10.0,
+            "bank_angle": 20.0,
+            "altitude": 50.0,
+            "loaded": True,
+            "ground_roll": False,
+        },
+        {
+            "id": 2,
+            "name": "Cruise",
+            "v_forward": "V_cruise",
+            "v_vert": "Zero",
+            "time_frac": 0.35,
+            "pct_banked": 25.0,
+            "bank_angle": 35.0,
+            "altitude": 100.0,
+            "loaded": True,
+            "ground_roll": False,
+        },
+        {
+            "id": 3,
+            "name": "Drop Load",
+            "v_forward": "V_cruise",
+            "v_vert": "Zero",
+            "time_frac": 0.05,
+            "pct_banked": 0.0,
+            "bank_angle": 0.0,
+            "altitude": 80.0,
+            "loaded": False,
+            "ground_roll": False,
+        },
+        {
+            "id": 4,
+            "name": "RTB",
+            "v_forward": "V_cruise",
+            "v_vert": "Zero",
+            "time_frac": 0.30,
+            "pct_banked": 25.0,
+            "bank_angle": 35.0,
+            "altitude": 80.0,
+            "loaded": False,
+            "ground_roll": False,
+        },
+        {
+            "id": 5,
+            "name": "Land",
+            "v_forward": "V_stall",
+            "v_vert": "V_descent",
+            "time_frac": 0.10,
+            "pct_banked": 0.0,
+            "bank_angle": 0.0,
+            "altitude": 0.0,
+            "loaded": False,
+            "ground_roll": False,
+        },
+    ]
+    for seg in default_specs:
+        t_s = round(seg["time_frac"] * eff_t0, 2)
+        vf = abs(v_map0.get(seg["v_forward"], 0.0))
+        d_m = round(vf * t_s, 2)
+        seg["time_s"] = t_s
+        seg["distance_m"] = d_m
+        sid = seg["id"]
+        st.session_state[f"seg_name_{sid}"] = seg["name"]
+        st.session_state[f"seg_vfwd_{sid}"] = seg["v_forward"]
+        st.session_state[f"seg_vvert_{sid}"] = seg["v_vert"]
+        st.session_state[f"seg_frac_{sid}"] = float(seg["time_frac"])
+        st.session_state[f"seg_time_{sid}"] = float(seg["time_s"])
+        st.session_state[f"seg_dist_{sid}"] = float(seg["distance_m"])
+        st.session_state[f"seg_pbank_{sid}"] = float(seg["pct_banked"])
+        st.session_state[f"seg_bank_{sid}"] = float(seg["bank_angle"])
+        st.session_state[f"seg_alt_{sid}"] = float(seg["altitude"])
+        st.session_state[f"seg_loaded_{sid}"] = bool(seg["loaded"])
+        st.session_state[f"seg_ground_{sid}"] = bool(seg["ground_roll"])
+
+    st.session_state.mission_segments = default_specs
+
+
+# Callbacks for mission segment synchronization
+def sync_all_segments_from_global():
+    """Recalculates segment times & distances when effective target time or generic speeds change."""
+    eff_t = get_effective_target_time()
+    v_map = get_velocity_dict()
+    for seg in st.session_state.mission_segments:
+        sid = seg["id"]
+        frac = float(st.session_state.get(f"seg_frac_{sid}", seg["time_frac"]))
+        vf_key = st.session_state.get(f"seg_vfwd_{sid}", seg["v_forward"])
+        if vf_key not in v_map:
+            vf_key = "V_cruise"
+            st.session_state[f"seg_vfwd_{sid}"] = vf_key
+        vf = abs(v_map.get(vf_key, 0.0))
+        new_t = round(frac * eff_t, 2)
+        new_d = round(vf * new_t, 2)
+        st.session_state[f"seg_time_{sid}"] = float(new_t)
+        st.session_state[f"seg_dist_{sid}"] = float(new_d)
+        seg["time_frac"] = frac
+        seg["time_s"] = float(new_t)
+        seg["distance_m"] = float(new_d)
+
+
+def on_seg_frac_change(sid):
+    eff_t = get_effective_target_time()
+    v_map = get_velocity_dict()
+    frac = float(st.session_state[f"seg_frac_{sid}"])
+    vf_key = st.session_state[f"seg_vfwd_{sid}"]
+    vf = abs(v_map.get(vf_key, 0.0))
+    new_t = round(frac * eff_t, 2)
+    new_d = round(vf * new_t, 2)
+    st.session_state[f"seg_time_{sid}"] = float(new_t)
+    st.session_state[f"seg_dist_{sid}"] = float(new_d)
+    for seg in st.session_state.mission_segments:
+        if seg["id"] == sid:
+            seg["time_frac"] = frac
+            seg["time_s"] = float(new_t)
+            seg["distance_m"] = float(new_d)
+            break
+
+
+def on_seg_time_change(sid):
+    eff_t = get_effective_target_time()
+    v_map = get_velocity_dict()
+    new_t = float(st.session_state[f"seg_time_{sid}"])
+    vf_key = st.session_state[f"seg_vfwd_{sid}"]
+    vf = abs(v_map.get(vf_key, 0.0))
+    new_frac = round(new_t / eff_t, 4) if eff_t > 0 else 0.0
+    new_d = round(vf * new_t, 2)
+    st.session_state[f"seg_frac_{sid}"] = float(new_frac)
+    st.session_state[f"seg_dist_{sid}"] = float(new_d)
+    for seg in st.session_state.mission_segments:
+        if seg["id"] == sid:
+            seg["time_frac"] = float(new_frac)
+            seg["time_s"] = new_t
+            seg["distance_m"] = float(new_d)
+            break
+
+
+def on_seg_dist_change(sid):
+    eff_t = get_effective_target_time()
+    v_map = get_velocity_dict()
+    new_d = float(st.session_state[f"seg_dist_{sid}"])
+    vf_key = st.session_state[f"seg_vfwd_{sid}"]
+    vf = abs(v_map.get(vf_key, 0.0))
+    if vf > 1e-6:
+        new_t = round(new_d / vf, 2)
+        new_frac = round(new_t / eff_t, 4) if eff_t > 0 else 0.0
+        st.session_state[f"seg_time_{sid}"] = float(new_t)
+        st.session_state[f"seg_frac_{sid}"] = float(new_frac)
+        for seg in st.session_state.mission_segments:
+            if seg["id"] == sid:
+                seg["time_frac"] = float(new_frac)
+                seg["time_s"] = float(new_t)
+                seg["distance_m"] = new_d
+                break
+    else:
+        st.warning(
+            f"Segment forward velocity ({vf_key}) is 0 m/s; distance cannot drive time."
+        )
+
+
+def on_seg_vfwd_change(sid):
+    v_map = get_velocity_dict()
+    vf_key = st.session_state[f"seg_vfwd_{sid}"]
+    vf = abs(v_map.get(vf_key, 0.0))
+    cur_t = float(st.session_state[f"seg_time_{sid}"])
+    new_d = round(vf * cur_t, 2)
+    st.session_state[f"seg_dist_{sid}"] = float(new_d)
+    for seg in st.session_state.mission_segments:
+        if seg["id"] == sid:
+            seg["v_forward"] = vf_key
+            seg["distance_m"] = float(new_d)
+            break
+
+
+def add_mission_segment():
+    sid = int(st.session_state.next_seg_id)
+    st.session_state.next_seg_id = sid + 1
+    eff_t = get_effective_target_time()
+    v_map = get_velocity_dict()
+    frac = 0.05
+    t_s = round(frac * eff_t, 2)
+    vf = abs(v_map.get("V_cruise", 16.0))
+    d_m = round(vf * t_s, 2)
+    new_seg = {
+        "id": sid,
+        "name": f"Segment {len(st.session_state.mission_segments) + 1}",
+        "v_forward": "V_cruise",
+        "v_vert": "Zero",
+        "time_frac": frac,
+        "time_s": t_s,
+        "distance_m": d_m,
+        "pct_banked": 0.0,
+        "bank_angle": 0.0,
+        "altitude": 100.0,
+        "loaded": False,
+        "ground_roll": False,
+    }
+    st.session_state[f"seg_name_{sid}"] = new_seg["name"]
+    st.session_state[f"seg_vfwd_{sid}"] = new_seg["v_forward"]
+    st.session_state[f"seg_vvert_{sid}"] = new_seg["v_vert"]
+    st.session_state[f"seg_frac_{sid}"] = float(new_seg["time_frac"])
+    st.session_state[f"seg_time_{sid}"] = float(new_seg["time_s"])
+    st.session_state[f"seg_dist_{sid}"] = float(new_seg["distance_m"])
+    st.session_state[f"seg_pbank_{sid}"] = float(new_seg["pct_banked"])
+    st.session_state[f"seg_bank_{sid}"] = float(new_seg["bank_angle"])
+    st.session_state[f"seg_alt_{sid}"] = float(new_seg["altitude"])
+    st.session_state[f"seg_loaded_{sid}"] = bool(new_seg["loaded"])
+    st.session_state[f"seg_ground_{sid}"] = bool(new_seg["ground_roll"])
+    st.session_state.mission_segments.append(new_seg)
+
+
+def remove_mission_segment(sid):
+    st.session_state.mission_segments = [
+        s for s in st.session_state.mission_segments if s["id"] != sid
+    ]
+    for prefix in [
+        "seg_name_",
+        "seg_vfwd_",
+        "seg_vvert_",
+        "seg_frac_",
+        "seg_time_",
+        "seg_dist_",
+        "seg_pbank_",
+        "seg_bank_",
+        "seg_alt_",
+        "seg_loaded_",
+        "seg_ground_",
+    ]:
+        st.session_state.pop(f"{prefix}{sid}", None)
+
 # Allow optional syncing rather than forcibly overwriting manual edits every rerun
 if use_live_sheet:
     if st.sidebar.button("Sync Target MTOW with Live Sheet"):
@@ -228,16 +500,125 @@ def update_cd0_callback():
     st.session_state.cd0_active = st.session_state.temp_recalc_cd0
 
 
-# -------------------------------------------------------------
-# STAGE 1: MISSION PROFILE
+#-------------------------------------------------------------
+# STAGE 1: MISSION PROFILE & GENERIC VELOCITY DEFINITIONS
 # -------------------------------------------------------------
 st.header("1. Görev Profili ve Parametreler")
+
+# --- 1.1 GENERIC VELOCITY DEFINITIONS ---
+st.subheader("1.1 Generic Velocity Definitions")
+st.caption(
+    "Define reference velocities here. These populate the mission segment velocity dropdowns and drive the constraint sizing."
+)
+
+vcol1, vcol2, vcol3, vcol4, vcol5, vcol6 = st.columns(6)
+with vcol1:
+    v_stall = st.number_input(
+        "V_stall (m/s)",
+        min_value=1.0,
+        step=0.5,
+        key="v_stall",
+        on_change=sync_all_segments_from_global,
+    )
+with vcol2:
+    v_to = st.number_input(
+        "V_to (Takeoff, m/s)",
+        min_value=1.0,
+        step=0.5,
+        key="v_to",
+        on_change=sync_all_segments_from_global,
+    )
+with vcol3:
+    v_climb = st.number_input(
+        "V_climb (m/s)",
+        min_value=1.0,
+        step=0.5,
+        key="v_climb",
+        on_change=sync_all_segments_from_global,
+    )
+with vcol4:
+    v_cruise = st.number_input(
+        "V_cruise (m/s)",
+        min_value=1.0,
+        step=0.5,
+        key="v_cruise",
+        on_change=sync_all_segments_from_global,
+    )
+with vcol5:
+    climb_rate = st.number_input(
+        "V_vert_climb (m/s)",
+        min_value=0.0,
+        step=0.5,
+        key="climb_rate",
+        on_change=sync_all_segments_from_global,
+    )
+with vcol6:
+    v_descent = st.number_input(
+        "V_descent (m/s)",
+        min_value=-20.0,
+        max_value=0.0,
+        step=0.5,
+        key="v_descent",
+        on_change=sync_all_segments_from_global,
+    )
+
+with st.expander("➕ Manage Custom Generic Velocities", expanded=False):
+    c_spd1, c_spd2, c_spd3 = st.columns([2, 2, 1])
+    with c_spd1:
+        new_spd_name = st.text_input("New Velocity Name (e.g., V_loiter, V_dash)", value="")
+    with c_spd2:
+        new_spd_val = st.number_input("Velocity Value (m/s)", value=14.0, step=0.5)
+    with c_spd3:
+        st.write("")
+        st.write("")
+        if st.button("➕ Add / Update Speed"):
+            clean_name = new_spd_name.strip()
+            if clean_name:
+                st.session_state.custom_speeds[clean_name] = float(new_spd_val)
+                sync_all_segments_from_global()
+                st.rerun()
+
+    if st.session_state.custom_speeds:
+        st.markdown("**Active Custom Velocities:**")
+        for k_spd in list(st.session_state.custom_speeds.keys()):
+            cs1, cs2, cs3 = st.columns([2, 2, 1])
+            cs1.write(f"**{k_spd}**")
+            updated_v = cs2.number_input(
+                f"Value for {k_spd} (m/s)",
+                value=float(st.session_state.custom_speeds[k_spd]),
+                step=0.5,
+                key=f"cust_spd_edit_{k_spd}",
+            )
+            if updated_v != st.session_state.custom_speeds[k_spd]:
+                st.session_state.custom_speeds[k_spd] = float(updated_v)
+                sync_all_segments_from_global()
+            if cs3.button("🗑️ Remove", key=f"del_spd_{k_spd}"):
+                del st.session_state.custom_speeds[k_spd]
+                sync_all_segments_from_global()
+                st.rerun()
+
+velocity_dict = get_velocity_dict()
+velocity_options = list(velocity_dict.keys())
+velocity_summary_str = " | ".join([f"**{k}**: {v:.2f} m/s" for k, v in velocity_dict.items()])
+st.caption(f"Available Speeds Pool: {velocity_summary_str}")
+
+st.markdown("---")
+
+# --- 1.2 AIRCRAFT, SURFACE, MANEUVER & ATMOSPHERE PARAMETERS ---
+st.subheader("1.2 Aircraft, Surface, Maneuver & Aero Limits")
 col_p1, col_p2, col_p3 = st.columns(3)
 
 with col_p1:
-    st.subheader("Takeoff & Surface")
+    st.markdown("**Weights & Surface**")
     target_mtow = st.number_input("Target MTOW (kg)", min_value=0.1, step=0.1, key="target_mtow")
-    v_to = st.number_input("Takeoff Speed V_TO (m/s)", min_value=1.0, step=0.5, key="v_to")
+    payload_mass = st.number_input(
+        "Droppable Load / Payload Mass (kg)",
+        min_value=0.0,
+        max_value=float(target_mtow) * 0.95,
+        step=0.05,
+        key="payload_mass",
+        help="Subtracted from MTOW on mission segments where 'Loaded' is unchecked.",
+    )
     s_g = st.number_input("Ground Run Limit S_g (m)", min_value=1.0, step=1.0, key="s_g")
     runway_friction = st.number_input(
         "Runway Friction Coefficient",
@@ -261,11 +642,7 @@ def update_from_load():
 
 
 with col_p2:
-    st.subheader("Speeds & Maneuver")
-    v_cruise = st.number_input("Cruise Speed (m/s)", min_value=1.0, step=0.5, key="v_cruise")
-    v_climb = st.number_input("Climb Speed (m/s)", min_value=1.0, step=0.5, key="v_climb")
-    climb_rate = st.number_input("Rate of Climb V_v (m/s)", min_value=0.0, step=0.5, key="climb_rate")
-
+    st.markdown("**Climb & Maneuver Limits**")
     # Safe clamping for arcsin to prevent domain crash when climb_rate > v_climb
     climb_ratio = np.clip(climb_rate / v_climb, -1.0, 1.0)
     climb_angle = np.degrees(np.arcsin(climb_ratio))
@@ -274,7 +651,7 @@ with col_p2:
     st.caption(f"Tırmanma Açısı (γ): **{climb_angle:.1f}°**")
 
     bank_angle = st.slider(
-        "Bank Angle φ (°)",
+        "Sizing Max Bank Angle φ (°)",
         min_value=0.0,
         max_value=80.0,
         step=1.0,
@@ -292,16 +669,197 @@ with col_p2:
     )
 
 with col_p3:
-    st.subheader("Atmosphere & Aero Limits")
-    v_stall = st.number_input("Stall Speed V_s (m/s)", min_value=1.0, step=0.5, key="v_stall")
+    st.markdown("**Atmosphere & Aero Limits**")
     cl_max_est = st.number_input("Estimated CL_max", min_value=0.1, step=0.05, key="cl_max_est")
     rho = st.number_input("Density rho (kg/m^3)", min_value=0.1, format="%.3f", key="rho")
     mu_air = st.number_input("Dynamic Viscosity mu (kg/(m*s))", format="%.3e", key="mu_air")
     g = st.number_input("Gravity g (m/s^2)", min_value=1.0, format="%.5f", key="g")
-    cd0_active = st.number_input("Parasite Drag CD0", min_value=0.001, format="%.4f", key="cd0_active")
-    cd_to = st.number_input("Takeoff CD (CD_to)", min_value=0.001, step=0.005, format="%.3f", key="cd_to")
+    cd0_active = st.number_input(
+        "Parasite Drag CD0", min_value=0.001, format="%.4f", key="cd0_active"
+    )
+    cd_to = st.number_input(
+        "Takeoff CD (CD_to)", min_value=0.001, step=0.005, format="%.3f", key="cd_to"
+    )
     cl_to = st.number_input("Takeoff CL (CL_to)", min_value=0.01, step=0.05, key="cl_to")
 
+st.markdown("---")
+
+# --- 1.3 MISSION PROPERTIES & INTERACTIVE MISSION SEGMENTS ---
+st.subheader("1.3 Mission Properties & Segments Builder")
+
+mp_col1, mp_col2, mp_col3, mp_col4 = st.columns(4)
+with mp_col1:
+    target_flight_time = st.number_input(
+        "Target Flight Time Goal (s)",
+        min_value=10.0,
+        step=10.0,
+        key="target_flight_time",
+        on_change=sync_all_segments_from_global,
+    )
+with mp_col2:
+    time_fos = st.number_input(
+        "Mission Time FoS (Factor of Safety)",
+        min_value=1.0,
+        max_value=3.0,
+        step=0.05,
+        key="time_fos",
+        on_change=sync_all_segments_from_global,
+    )
+effective_target_time = get_effective_target_time()
+with mp_col3:
+    st.metric(
+        "Effective Target Time",
+        f"{effective_target_time:.1f} s",
+        f"{effective_target_time / 60.0:.2f} min",
+    )
+with mp_col4:
+    st.metric(
+        "Loaded / Unloaded Mass",
+        f"{target_mtow:.2f} kg",
+        f"After Drop: {max(0.1, target_mtow - payload_mass):.2f} kg",
+    )
+
+st.markdown(
+    "**Mission Segments** *(Edit **Time Fraction**, **Time (s)**, or **Distance (m)** — they automatically sync two-way based on the chosen Forward Velocity)*"
+)
+
+for idx, seg in enumerate(list(st.session_state.mission_segments)):
+    sid = seg["id"]
+    if st.session_state.get(f"seg_vfwd_{sid}") not in velocity_options:
+        st.session_state[f"seg_vfwd_{sid}"] = "V_cruise"
+    if st.session_state.get(f"seg_vvert_{sid}") not in velocity_options:
+        st.session_state[f"seg_vvert_{sid}"] = "Zero"
+
+    with st.container(border=True):
+        r1_c1, r1_c2, r1_c3, r1_c4, r1_c5, r1_c6 = st.columns([2.0, 1.5, 1.5, 1.1, 0.9, 0.5])
+        with r1_c1:
+            seg["name"] = st.text_input(
+                f"#{idx + 1} Segment Name",
+                key=f"seg_name_{sid}",
+            )
+        with r1_c2:
+            seg["v_forward"] = st.selectbox(
+                f"v_forward ({velocity_dict.get(st.session_state[f'seg_vfwd_{sid}'], 0.0):.1f} m/s)",
+                options=velocity_options,
+                key=f"seg_vfwd_{sid}",
+                on_change=on_seg_vfwd_change,
+                args=(sid,),
+            )
+        with r1_c3:
+            seg["v_vert"] = st.selectbox(
+                f"v_vert ({velocity_dict.get(st.session_state[f'seg_vvert_{sid}'], 0.0):.1f} m/s)",
+                options=velocity_options,
+                key=f"seg_vvert_{sid}",
+            )
+        with r1_c4:
+            seg["altitude"] = st.number_input(
+                "Altitude (m)",
+                min_value=0.0,
+                max_value=5000.0,
+                step=10.0,
+                key=f"seg_alt_{sid}",
+            )
+        with r1_c5:
+            seg["loaded"] = st.checkbox(
+                "Loaded?",
+                key=f"seg_loaded_{sid}",
+                help="Checked = MTOW; Unchecked = MTOW - Payload Mass",
+            )
+            seg["ground_roll"] = st.checkbox(
+                "Ground Roll?",
+                key=f"seg_ground_{sid}",
+                help="Check for takeoff ground run friction & acceleration.",
+            )
+        with r1_c6:
+            st.write("")
+            if st.button("🗑️", key=f"del_seg_btn_{sid}", help="Remove Segment"):
+                remove_mission_segment(sid)
+                st.rerun()
+
+        r2_c1, r2_c2, r2_c3, r2_c4, r2_c5 = st.columns(5)
+        with r2_c1:
+            seg["time_frac"] = st.number_input(
+                "Time Fraction (of Eff. Time)",
+                min_value=0.0,
+                max_value=5.0,
+                step=0.01,
+                format="%.4f",
+                key=f"seg_frac_{sid}",
+                on_change=on_seg_frac_change,
+                args=(sid,),
+            )
+        with r2_c2:
+            seg["time_s"] = st.number_input(
+                "Time (s)",
+                min_value=0.0,
+                step=1.0,
+                format="%.2f",
+                key=f"seg_time_{sid}",
+                on_change=on_seg_time_change,
+                args=(sid,),
+            )
+        with r2_c3:
+            seg["distance_m"] = st.number_input(
+                "Distance (m)",
+                min_value=0.0,
+                step=10.0,
+                format="%.2f",
+                key=f"seg_dist_{sid}",
+                on_change=on_seg_dist_change,
+                args=(sid,),
+            )
+        with r2_c4:
+            seg["pct_banked"] = st.number_input(
+                "% Banked Travel",
+                min_value=0.0,
+                max_value=100.0,
+                step=5.0,
+                format="%.1f",
+                key=f"seg_pbank_{sid}",
+            )
+        with r2_c5:
+            seg["bank_angle"] = st.number_input(
+                "Segment Bank Angle φ (°)",
+                min_value=0.0,
+                max_value=75.0,
+                step=5.0,
+                format="%.1f",
+                key=f"seg_bank_{sid}",
+            )
+
+btn_col1, btn_col2, btn_col3 = st.columns([1.5, 2.0, 3.5])
+with btn_col1:
+    if st.button("➕ Add Mission Segment", use_container_width=True):
+        add_mission_segment()
+        st.rerun()
+
+total_frac_sum = sum(s["time_frac"] for s in st.session_state.mission_segments)
+total_mission_time_s = sum(s["time_s"] for s in st.session_state.mission_segments)
+total_mission_dist_m = sum(s["distance_m"] for s in st.session_state.mission_segments)
+
+with btn_col2:
+    if st.button("⚖️ Normalize Time Fractions to 1.0", use_container_width=True):
+        if total_frac_sum > 0:
+            for s in st.session_state.mission_segments:
+                sid = s["id"]
+                s["time_frac"] = round(s["time_frac"] / total_frac_sum, 4)
+                st.session_state[f"seg_frac_{sid}"] = float(s["time_frac"])
+            sync_all_segments_from_global()
+            st.rerun()
+
+with btn_col3:
+    if abs(total_frac_sum - 1.0) > 0.01:
+        st.warning(
+            f"Total Time Fraction = **{total_frac_sum:.3f}** ({total_frac_sum * 100:.1f}% of Eff. Target Time) | "
+            f"Scheduled Time: **{total_mission_time_s:.1f} s** ({total_mission_time_s / 60.0:.2f} min) | "
+            f"Total Distance: **{total_mission_dist_m:,.1f} m**"
+        )
+    else:
+        st.success(
+            f"Total Time Fraction = **{total_frac_sum:.3f}** (100% of Eff. Target Time) | "
+            f"Scheduled Time: **{total_mission_time_s:.1f} s** ({total_mission_time_s / 60.0:.2f} min) | "
+            f"Total Distance: **{total_mission_dist_m:,.1f} m**"
+        )
 # -------------------------------------------------------------
 # STAGE 2: P/W CONSTRAINT ANALYSIS
 # -------------------------------------------------------------
