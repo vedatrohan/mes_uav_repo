@@ -692,8 +692,6 @@ st.markdown("---")
 # --- 1.3 MISSION PROPERTIES & INTERACTIVE MISSION SEGMENTS ---
 st.subheader("1.3 Mission Properties & Segments Builder")
 
-sync_all_segments_from_global() #to force calculate the distances without falling back to defaults
-
 mp_col1, mp_col2, mp_col3, mp_col4 = st.columns(4)
 with mp_col1:
     target_flight_time = st.number_input(
@@ -799,7 +797,7 @@ for idx, seg in enumerate(list(st.session_state.mission_segments)):
             )
         with r2_c2:
             # Displays and binds in MINUTES
-            seg["time_min"] = st.number_input(
+            seg["time_m"] = st.number_input(
                 "Time (min)",
                 min_value=0.0,
                 step=0.05,
@@ -1362,35 +1360,38 @@ with b_col4:
 
 # --- 2. Helper: Calculate Required Thrust for Any Mission Segment ---
 def calculate_segment_thrust(seg, v_fwd, v_vert):
-    """
-    Computes required aerodynamic thrust based on speed, climb angle,
-    mass state (loaded vs unloaded), and ground roll status.
-    """
-    # Mass determination
     m_active = target_mtow if seg.get("loaded", True) else max(0.1, target_mtow - payload_mass_kg)
     weight_n = m_active * g
-
-    ld = cl_to/cd_to
+    q = 0.5 * rho * (max(v_fwd, 1.0) ** 2)
 
     if seg.get("ground_roll", False):
-        # Takeoff ground roll: Aerodynamic drag + runway rolling friction
-        # T ~= D + mu*(W - L), simplified average ground-run demand
-        mu_r = float(st.session_state.get("runway_friction", 0.08))
-        t_req = (0.5 * weight_n / ld) + (mu_r * weight_n * 0.8)
+        # Use exact same physics as Stage 2 Takeoff Ground Run
+        q_to = 0.5 * rho * ((v_to / math.sqrt(2.0)) ** 2)
+        accel_term = (v_to ** 2) / (2.0 * g * s_g)
+        drag_term = (q_to * s_req * cd_to) / weight_n
+        fric_term = runway_friction * (1.0 - (q_to * s_req * cl_to) / weight_n)
+        t_req = weight_n * (accel_term + drag_term + max(0.0, fric_term))
     elif v_vert > 0.05 and v_fwd > 0.1:
-        # Steady climbing flight: T = D + W * sin(gamma) = (W / (L/D)) + W * (V_vert / V_fwd)
         sin_gamma = np.clip(v_vert / v_fwd, 0.0, 0.9)
-        t_req = (weight_n / ld * 1.2) + (weight_n * sin_gamma)
+        cos_gamma = math.sqrt(1.0 - sin_gamma**2)
+        cl_seg = (weight_n * cos_gamma) / (q * s_req)
+        cd_seg = cd0_active + k_factor * (cl_seg ** 2)
+        t_req = (q * s_req * cd_seg) + (weight_n * sin_gamma)
     elif v_vert < -0.05 and v_fwd > 0.1:
-        # Descent flight: Gravity aids forward flight
         sin_gamma = np.clip(abs(v_vert) / v_fwd, 0.0, 0.9)
-        t_req = max(1.0, (weight_n / ld * 1.2) - (weight_n * sin_gamma))
+        cos_gamma = math.sqrt(1.0 - sin_gamma**2)
+        cl_seg = (weight_n * cos_gamma) / (q * s_req)
+        cd_seg = cd0_active + k_factor * (cl_seg ** 2)
+        t_req = max(0.5, (q * s_req * cd_seg) - (weight_n * sin_gamma))
     else:
-        # Level flight (accounting for bank angle induced load factor)
         bank_deg = float(seg.get("bank_angle", 0.0))
         pct_bank = float(seg.get("pct_banked", 0.0)) / 100.0
-        n_effective = 1.0 + pct_bank * ((1.0 / max(np.cos(np.radians(bank_deg)), 0.2)) - 1.0)
-        t_req = (weight_n * n_effective) / (ld * 1.2) # TODO !!! This is made up by me !!! the factor 1.2 REPLACE with a SOUND LOGIC
+        n_turn_seg = 1.0 / max(np.cos(np.radians(bank_deg)), 0.2)
+        cl_level = weight_n / (q * s_req)
+        cd_level = cd0_active + k_factor * (cl_level ** 2)
+        cd_banked = cd0_active + k_factor * ((cl_level * n_turn_seg) ** 2)
+        cd_eff = (1.0 - pct_bank) * cd_level + pct_bank * cd_banked
+        t_req = q * s_req * cd_eff
 
     return max(0.5, float(t_req))
 
@@ -1404,7 +1405,7 @@ has_power_failure = False
 for seg in st.session_state.mission_segments:
     sid = seg["id"]
     seg_name = st.session_state.get(f"seg_name_{sid}", seg.get("name", f"Seg {sid}"))
-    t_min = float(st.session_state.get(f"seg_time_{sid}", seg.get("time_min", 0.0)))
+    t_min = float(st.session_state.get(f"seg_time_{sid}", seg.get("time_m", 0.0)))
     t_sec = t_min * 60.0
 
     # Retrieve associated speeds
