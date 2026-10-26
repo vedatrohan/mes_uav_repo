@@ -508,6 +508,10 @@ if use_live_sheet:
 
 st.title("MES İHA Konsept Tasarım Aracı")
 
+eta_motor_esc = st.sidebar.slider(
+    "Motor & ESC Efficiency", 0.70, 0.95, step=0.01, key="eta_motor_esc"
+)
+
 
 def update_cd0_callback():
     st.session_state.cd0_active = st.session_state.temp_recalc_cd0
@@ -1428,7 +1432,7 @@ for seg in st.session_state.mission_segments:
 
     p_total_elec = p_prop_elec + avionics_power_w
     avg_current_a = p_total_elec / batt_s * 3.7
-    
+
     # Energy spent in this segment
     spent_wh = p_total_elec * (t_sec / 3600.0)
     spent_mah = (avg_current_a * (t_sec / 3600.0)) * 1000.0
@@ -1786,10 +1790,6 @@ sm_range = st.slider(
     key="sm_range",
 )
 sm_min, sm_max = sm_range
-
-eta_motor_esc = st.slider(
-    "Motor & ESC Efficiency", 0.70, 0.95, step=0.01, key="eta_motor_esc"
-)
 
 tail_effectiveness = st.slider(
     "Tail Effectiveness Factor η_eff = (q_t/q) * (a_t/a_w) * (1 - dε/dα)",
