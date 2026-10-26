@@ -361,10 +361,10 @@ if "mission_segments" not in st.session_state:
     ]
 
     for seg in default_specs:
-        t_s = round(seg["time_frac"] * eff_t0, 2)
+        t_m = round(seg["time_frac"] * eff_t0, 2)
         vf = abs(v_map0.get(seg["v_forward"], 0.0))
-        d_m = round(vf * t_s, 2)
-        seg["time_m"] = t_s
+        d_m = round(vf * t_m * 60, 2)
+        seg["time_m"] = t_m
         seg["distance_m"] = d_m
         sid = seg["id"]
 
@@ -436,7 +436,7 @@ def on_seg_vfwd_change(sid):
     vf_key = st.session_state[f"seg_vfwd_{sid}"]
     vf = abs(v_map.get(vf_key, 0.0))
     cur_t = float(st.session_state[f"seg_time_{sid}"])
-    new_d = round(vf * cur_t, 2)
+    new_d = round(vf * cur_t * 60, 2)
     st.session_state[f"seg_dist_{sid}"] = float(new_d)
     for seg in st.session_state.mission_segments:
         if seg["id"] == sid:
@@ -450,16 +450,16 @@ def add_mission_segment():
     eff_t = get_effective_target_time()
     v_map = get_velocity_dict()
     frac = 0.05
-    t_s = round(frac * eff_t, 2)
+    t_m = round(frac * eff_t, 2)
     vf = abs(v_map.get("V_cruise", 16.0))
-    d_m = round(vf * t_s, 2)
+    d_m = round(vf * t_m * 60, 2)
     new_seg = {
         "id": sid,
         "name": f"Segment {len(st.session_state.mission_segments) + 1}",
         "v_forward": "V_cruise",
         "v_vert": "Zero",
         "time_frac": frac,
-        "time_m": t_s,
+        "time_m": t_m,
         "distance_m": d_m,
         "pct_banked": 0.0,
         "bank_angle": 0.0,
@@ -1471,7 +1471,7 @@ avg_mission_current = (
 m_b1, m_b2, m_b3, m_b4 = st.columns(4)
 with m_b1:
     st.metric(
-        "Total Capacity Spent"
+        "Total Capacity Spent",
         f"{total_spent_mah:,.0f} mAh",
         f"{(total_spent_mah / batt_cap) * 100:.1f}% used",
         delta_color="inverse",
