@@ -1425,7 +1425,7 @@ for seg in st.session_state.mission_segments:
     else:
         # Fallback approximation if curve limits are exceeded
         has_power_failure = True
-        p_prop_elec = (t_req * max(v_fwd, 1.0)) / max(float(st.session_state.get("eta_cruise", 0.7)), 0.1)
+        p_prop_elec = (t_req * max(v_fwd, 1.0)) / (st.session_state.get("eta_cruise") * st.session_state.get("eta_motor_esc"))
         prop_rpm = rpm_empty
         prop_eta = 0.50
         st.error("Fallback to assumed values due to inability to find op_point.")
