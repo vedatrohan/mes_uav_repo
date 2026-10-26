@@ -508,25 +508,9 @@ if use_live_sheet:
 
 st.title("MES İHA Konsept Tasarım Aracı")
 
-with st.sidebar:
-    st.header("Statik Stabilite Marj Sınırları")
-    sm_range = st.slider(
-        "Allowable Static Margin Range (% MAC)",
-        min_value=-5.0,
-        max_value=35.0,
-        step=0.5,
-        key="sm_range",
-    )
-    sm_min, sm_max = sm_range
-
-    eta_motor_esc = st.slider(
-        "Motor & ESC Efficiency", 0.70, 0.95, step=0.01, key="eta_motor_esc"
-    )
-
 
 def update_cd0_callback():
     st.session_state.cd0_active = st.session_state.temp_recalc_cd0
-
 
 #-------------------------------------------------------------
 # STAGE 1: MISSION PROFILE & GENERIC VELOCITY DEFINITIONS
@@ -534,9 +518,9 @@ def update_cd0_callback():
 st.header("1. Görev Profili ve Parametreler")
 
 # --- 1.1 GENERIC VELOCITY DEFINITIONS ---
-st.subheader("1.1 Generic Velocity Definitions")
+st.subheader("1.1 Hız Tanımları")
 st.caption(
-    "Define reference velocities here. These populate the mission segment velocity dropdowns and drive the constraint sizing."
+    "Çeşitli uçuş aşamalarında referans olarak kullanılacak hızlar burada tanımlanır ve sonraki aşamalarda seçilerek kullanılır."
 )
 
 vcol1, vcol2, vcol3, vcol4, vcol5, vcol6 = st.columns(6)
@@ -1086,8 +1070,6 @@ with col_el1:
         delta_color="inverse",
     )
 
-
-# --- PROPELLER COLUMN ---
 with col_el2:
     st.subheader("Propeller Selection")
     prop_type = st.radio("Propeller Definition", ["Database", "Custom"], horizontal=True)
@@ -1148,10 +1130,8 @@ with col_el2:
                     safe_get_coef(prop_data, "CP vs J (d)"),
                 ]
 
-                # Auto-detect if sheet stores coefficients scaled by 1000 (static CT > 1.0 is unphysical)
-                scale_factor = 1000.0 if abs(raw_ct[3]) > 1.0 else 1.0
-                ct_coeffs = [c / scale_factor for c in raw_ct]
-                cp_coeffs = [c / scale_factor for c in raw_cp]
+                ct_coeffs = raw_ct
+                cp_coeffs = raw_cp
             else:
                 st.warning(
                     f"Extracted [Dia: {target_dia}\", Pitch: {target_pitch}\"] from '{prop_choice}', "
@@ -1186,7 +1166,6 @@ with col_el2:
 # ---------------------------------------------------------
 st.markdown("---")
 st.subheader("Propulsion & Flight Stage Analysis")
-st.markdown("Flight speeds and required thrusts are dynamically linked to **Stages 1 & 2**.")
 
 w_n = target_mtow * g
 t_req_cruise_calc = float(tw_cruise * w_n)
@@ -1387,29 +1366,27 @@ def calculate_segment_thrust(seg, v_fwd, v_vert):
     m_active = target_mtow if seg.get("loaded", True) else max(0.1, target_mtow - payload_mass_kg)
     weight_n = m_active * g
 
-    # Lift-to-Drag ratio estimate across flight conditions
-    # (Uses active CD0, or fallback approximate L/D)
-    ld_eff = 10.0  # Cruise aerodynamic efficiency baseline
+    ld = cl_to/cd_to
 
     if seg.get("ground_roll", False):
         # Takeoff ground roll: Aerodynamic drag + runway rolling friction
         # T ~= D + mu*(W - L), simplified average ground-run demand
         mu_r = float(st.session_state.get("runway_friction", 0.08))
-        t_req = (0.5 * weight_n / ld_eff) + (mu_r * weight_n * 0.8)
+        t_req = (0.5 * weight_n / ld) + (mu_r * weight_n * 0.8)
     elif v_vert > 0.05 and v_fwd > 0.1:
         # Steady climbing flight: T = D + W * sin(gamma) = (W / (L/D)) + W * (V_vert / V_fwd)
         sin_gamma = np.clip(v_vert / v_fwd, 0.0, 0.9)
-        t_req = (weight_n / ld_eff) + (weight_n * sin_gamma)
+        t_req = (weight_n / ld * 1.2) + (weight_n * sin_gamma)
     elif v_vert < -0.05 and v_fwd > 0.1:
         # Descent flight: Gravity aids forward flight
         sin_gamma = np.clip(abs(v_vert) / v_fwd, 0.0, 0.9)
-        t_req = max(1.0, (weight_n / ld_eff) - (weight_n * sin_gamma))
+        t_req = max(1.0, (weight_n / ld * 1.2) - (weight_n * sin_gamma))
     else:
         # Level flight (accounting for bank angle induced load factor)
         bank_deg = float(seg.get("bank_angle", 0.0))
         pct_bank = float(seg.get("pct_banked", 0.0)) / 100.0
         n_effective = 1.0 + pct_bank * ((1.0 / max(np.cos(np.radians(bank_deg)), 0.2)) - 1.0)
-        t_req = (weight_n * n_effective) / ld_eff
+        t_req = (weight_n * n_effective) / (ld * 1.2) # TODO !!! This is made up by me !!! the factor 1.2 REPLACE with a SOUND LOGIC
 
     return max(0.5, float(t_req))
 
@@ -1446,10 +1423,12 @@ for seg in st.session_state.mission_segments:
         p_prop_elec = (t_req * max(v_fwd, 1.0)) / max(float(st.session_state.get("eta_cruise", 0.7)), 0.1)
         prop_rpm = rpm_empty
         prop_eta = 0.50
+        st.error("Fallback to assumed values due to inability to find op_point.")
+
 
     p_total_elec = p_prop_elec + avionics_power_w
-    avg_current_a = p_total_elec / max(batt_s*3.7, 1.0)
-
+    avg_current_a = p_total_elec / batt_s * 3.7
+    
     # Energy spent in this segment
     spent_wh = p_total_elec * (t_sec / 3600.0)
     spent_mah = (avg_current_a * (t_sec / 3600.0)) * 1000.0
@@ -1603,10 +1582,6 @@ fig_soc.update_layout(
 
 st.plotly_chart(fig_soc, use_container_width=True)
 st.markdown("---")
-
-
-
-
 
 # -------------------------------------------------------------
 # STAGE 4: WING SIZING
@@ -1801,6 +1776,20 @@ with tl2:
 
 st.markdown("---")
 st.subheader("Longitudinal Static Stability Analysis")
+
+st.header("Statik Stabilite Marj Sınırları")
+sm_range = st.slider(
+    "Allowable Static Margin Range (% MAC)",
+    min_value=-5.0,
+    max_value=35.0,
+    step=0.5,
+    key="sm_range",
+)
+sm_min, sm_max = sm_range
+
+eta_motor_esc = st.slider(
+    "Motor & ESC Efficiency", 0.70, 0.95, step=0.01, key="eta_motor_esc"
+)
 
 tail_effectiveness = st.slider(
     "Tail Effectiveness Factor η_eff = (q_t/q) * (a_t/a_w) * (1 - dε/dα)",
