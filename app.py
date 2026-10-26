@@ -444,7 +444,6 @@ def on_seg_vfwd_change(sid):
             seg["distance_m"] = float(new_d)
             break
 
-
 def add_mission_segment():
     sid = int(st.session_state.next_seg_id)
     st.session_state.next_seg_id = sid + 1
@@ -480,7 +479,6 @@ def add_mission_segment():
     st.session_state[f"seg_loaded_{sid}"] = bool(new_seg["loaded"])
     st.session_state[f"seg_ground_{sid}"] = bool(new_seg["ground_roll"])
     st.session_state.mission_segments.append(new_seg)
-
 
 def remove_mission_segment(sid):
     st.session_state.mission_segments = [
@@ -693,6 +691,8 @@ st.markdown("---")
 
 # --- 1.3 MISSION PROPERTIES & INTERACTIVE MISSION SEGMENTS ---
 st.subheader("1.3 Mission Properties & Segments Builder")
+
+sync_all_segments_from_global() #to force calculate the distances without falling back to defaults
 
 mp_col1, mp_col2, mp_col3, mp_col4 = st.columns(4)
 with mp_col1:
