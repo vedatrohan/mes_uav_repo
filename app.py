@@ -396,7 +396,7 @@ def sync_all_segments_from_global():
             st.session_state[f"seg_vfwd_{sid}"] = vf_key
         vf = abs(v_map.get(vf_key, 0.0))
         new_t = round(frac * eff_t, 2)
-        new_d = round(vf * new_t, 2)
+        new_d = round(vf * new_t * 60, 2)
         st.session_state[f"seg_time_{sid}"] = float(new_t)
         st.session_state[f"seg_dist_{sid}"] = float(new_d)
         seg["time_frac"] = frac
@@ -571,7 +571,7 @@ with vcol5:
 with vcol6:
     v_descent = st.number_input(
         "V_descent (m/s)",
-        min_value=-20.0,
+        min_value=-10.0,
         max_value=0.0,
         step=0.5,
         key="v_descent",
