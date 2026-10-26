@@ -1365,7 +1365,6 @@ def calculate_segment_thrust(seg, v_fwd, v_vert):
     q = 0.5 * rho * (max(v_fwd, 1.0) ** 2)
 
     if seg.get("ground_roll", False):
-        # Use exact same physics as Stage 2 Takeoff Ground Run
         q_to = 0.5 * rho * ((v_to / math.sqrt(2.0)) ** 2)
         accel_term = (v_to ** 2) / (2.0 * g * s_g)
         drag_term = (q_to * s_req * cd_to) / weight_n
