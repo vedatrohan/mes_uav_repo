@@ -1167,47 +1167,9 @@ with col_el2:
 # PERFORMANCE, FLIGHT STAGES & EFFICIENCY CURVE
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("Propulsion & Flight Stage Analysis")
+st.subheader("4. Propulsion & Mission Segment Analysis")
 
-w_n = target_mtow * g
-t_req_cruise_calc = float(tw_cruise * w_n)
-t_req_climb_calc = float(tw_climb * w_n)
-t_req_to_calc = float(tw_to * w_n)
-
-override_thrust = st.checkbox("Manually Override Required Thrusts?", value=False)
-
-fcol1, fcol2, fcol3 = st.columns(3)
-with fcol1:
-    st.info(f"**Takeoff Speed (Avg):** {v_to / math.sqrt(2):.2f} m/s (Liftoff: {v_to} m/s)")
-    req_t_takeoff = st.number_input(
-        "Req. Thrust Takeoff (N)",
-        value=round(t_req_to_calc, 2),
-        disabled=not override_thrust,
-    )
-    if not override_thrust:
-        req_t_takeoff = t_req_to_calc
-
-with fcol2:
-    st.info(f"**Climb Speed:** {v_climb} m/s")
-    req_t_climb = st.number_input(
-        "Req. Thrust Climb (N)",
-        value=round(t_req_climb_calc, 2),
-        disabled=not override_thrust,
-    )
-    if not override_thrust:
-        req_t_climb = t_req_climb_calc
-
-with fcol3:
-    st.info(f"**Cruise Speed:** {v_cruise} m/s")
-    req_t_cruise = st.number_input(
-        "Req. Thrust Cruise (N)",
-        value=round(t_req_cruise_calc, 2),
-        disabled=not override_thrust,
-    )
-    if not override_thrust:
-        req_t_cruise = t_req_cruise_calc
-
-
+# Polynomial resolver
 def calc_poly(coeffs, j):
     return coeffs[0] * (j**3) + coeffs[1] * (j**2) + coeffs[2] * j + coeffs[3]
 
@@ -1241,50 +1203,146 @@ def find_operating_point(V, T_req, rpm_max, ct_cf, cp_cf):
 
     return {"RPM": ns[idx] * 60.0, "J": Js[idx], "Power": P_elec, "Efficiency": eta}
 
+# --- DYNAMIC SEGMENT PHYSICS CALCULATION ---
+payload_mass_kg = st.session_state.get("payload_mass_kg", 0.0) # Fallback
 
-stages = {
-    "Takeoff": find_operating_point(v_to / math.sqrt(2), req_t_takeoff, rpm_empty, ct_coeffs, cp_coeffs),
-    "Climb": find_operating_point(v_climb, req_t_climb, rpm_empty, ct_coeffs, cp_coeffs),
-    "Cruise": find_operating_point(v_cruise, req_t_cruise, rpm_empty, ct_coeffs, cp_coeffs),
-}
+seg_analysis_data = []
+for idx, seg in enumerate(st.session_state.mission_segments):
+    sid = seg["id"]
+    seg_name = seg.get("name", f"Seg {idx+1}")
+
+    # 1. Hızlar
+    v_fwd_key = st.session_state.get(f"seg_vfwd_{sid}", "V_cruise")
+    V_fwd = velocity_dict.get(v_fwd_key, 10.0)
+    
+    v_vert_key = st.session_state.get(f"seg_vvert_{sid}", "Zero")
+    V_vert = velocity_dict.get(v_vert_key, 0.0)
+
+    # 2. İrtifa ve Atmosfer
+    alt = seg.get("altitude", 0.0)
+    rho_alt = rho * (1 - 2.25577e-5 * alt)**4.2561 if alt > 0 else rho
+
+    # 3. Kütle Durumu
+    is_loaded = seg.get("loaded", True)
+    mass = target_mtow if is_loaded else max(0.1, target_mtow - payload_mass_kg)
+    W = mass * g
+
+    # 4. Aerodinamik Çözümleme
+    V_fwd_calc = max(V_fwd, 0.1)
+    q = 0.5 * rho_alt * (V_fwd_calc**2)
+    
+    bank_deg = seg.get("bank_angle", 0.0)
+    n_load = 1.0 / max(np.cos(np.radians(bank_deg)), 0.01)
+    
+    L = W * n_load
+    CL = L / (q * s_req)
+    D = q * s_req * (cd0_active + k_factor * (CL**2))
+    
+    sin_gamma = np.clip(V_vert / V_fwd_calc, -1.0, 1.0)
+    T_req = D + (W * sin_gamma)
+
+    # 5. Ground Roll (Kalkış Koşusu Özel Durumu)
+    if seg.get("ground_roll", False):
+        V_fwd_avg = V_fwd / math.sqrt(2)
+        q_to = 0.5 * rho_alt * (max(V_fwd_avg, 0.1)**2)
+        # Kalkış ivmelenmesi + Aerodinamik Direnç + Yuvarlanma Direnci
+        T_req = ((V_fwd**2) / (2 * g * s_g)) * W + (q_to * s_req * cd_to) + runway_friction * (W - (q_to * s_req * cl_to))
+        V_op = V_fwd_avg
+    else:
+        V_op = V_fwd
+
+    seg_analysis_data.append({
+        "Segment": seg_name,
+        "V_op (m/s)": round(V_op, 2),
+        "Alt (m)": alt,
+        "Mass (kg)": round(mass, 2),
+        "Calc. Thrust (N)": max(0.0, round(T_req, 2))
+    })
+
+# --- DATA EDITOR (MANUAL OVERRIDE INTERFACE) ---
+st.info("💡 Aşağıdaki tablo her segment için ağırlık, irtifa, yatış ve tırmanma açısına göre **Gereken İtkiyi (N)** dinamik hesaplar. Herhangi bir değeri değiştirmek (override) için tablodaki itki sütununa tıklayabilirsiniz.")
+
+df_segments = pd.DataFrame(seg_analysis_data)
+edited_df = st.data_editor(
+    df_segments,
+    column_config={
+        "Calc. Thrust (N)": st.column_config.NumberColumn("Required Thrust (N)", min_value=0.0, step=0.1, format="%.2f N")
+    },
+    disabled=["Segment", "V_op (m/s)", "Alt (m)", "Mass (kg)"],
+    use_container_width=True,
+    hide_index=True
+)
+
+# --- OPERATING POINTS & PERFORMANCE VERIFICATION ---
+stages = {}
+results_list = []
+
+for idx, row in edited_df.iterrows():
+    seg_name = row["Segment"]
+    V_op = row["V_op (m/s)"]
+    T_req = row["Calc. Thrust (N)"]
+
+    op = find_operating_point(V_op, T_req, rpm_empty, ct_coeffs, cp_coeffs)
+    stages[seg_name] = {"op": op, "V": V_op}
+
+    if op is None:
+        results_list.append({
+            "Segment": seg_name,
+            "Status": "❌ RPM/Thrust Yetersiz",
+            "Req. RPM": None,
+            "Elec. Power (W)": None,
+            "Efficiency (%)": None
+        })
+    elif op["Power"] > active_max_power:
+        results_list.append({
+            "Segment": seg_name,
+            "Status": "⚠️ Max Güç Aşıldı!",
+            "Req. RPM": f"{op['RPM']:,.0f}",
+            "Elec. Power (W)": round(op["Power"], 1),
+            "Efficiency (%)": round(op["Efficiency"]*100, 1)
+        })
+    else:
+        results_list.append({
+            "Segment": seg_name,
+            "Status": "✅ Uygun",
+            "Req. RPM": f"{op['RPM']:,.0f}",
+            "Elec. Power (W)": round(op["Power"], 1),
+            "Efficiency (%)": round(op["Efficiency"]*100, 1)
+        })
+
+st.markdown("**Segment Propeller Performance Summary**")
+st.dataframe(pd.DataFrame(results_list), hide_index=True, use_container_width=True)
+
+# --- GLOBAL EFFICIENCY FEEDBACK (P/W GRAFİĞİNİ GÜNCELLEMEK İÇİN) ---
+avg_etas = {"Takeoff": [], "Climb": [], "Cruise": []}
+
+for idx, seg in enumerate(st.session_state.mission_segments):
+    seg_name = seg.get("name", f"Seg {idx+1}")
+    op = stages.get(seg_name, {}).get("op")
+    
+    if op is not None and 0.05 < op["Efficiency"] <= 1.0:
+        v_vert_val = velocity_dict.get(st.session_state.get(f"seg_vvert_{seg['id']}", "Zero"), 0.0)
+        if seg.get("ground_roll", False):
+            avg_etas["Takeoff"].append(op["Efficiency"])
+        elif v_vert_val > 0.0:
+            avg_etas["Climb"].append(op["Efficiency"])
+        else:
+            avg_etas["Cruise"].append(op["Efficiency"])
 
 needs_rerun = False
 stage_key_map = {"Takeoff": "eta_to", "Climb": "eta_climb", "Cruise": "eta_cruise"}
-for stage_name, key in stage_key_map.items():
-    if stages[stage_name] is not None:
-        new_eta = float(stages[stage_name]["Efficiency"])
-        if 0.05 < new_eta <= 1.0:
-            old_eta = st.session_state.get(key, 0.7)
-            if abs(new_eta - old_eta) > 0.015:
-                st.session_state[key] = round(new_eta, 3)
-                needs_rerun = True
+for cat, key in stage_key_map.items():
+    if avg_etas[cat]:
+        new_eta = sum(avg_etas[cat]) / len(avg_etas[cat]) # O kategoriye ait segmentlerin ortalaması
+        old_eta = st.session_state.get(key, 0.7)
+        if abs(new_eta - old_eta) > 0.015:
+            st.session_state[key] = round(new_eta, 3)
+            needs_rerun = True
 
 if needs_rerun:
     st.rerun()
 
-rcol1, rcol2, rcol3 = st.columns(3)
-cols = [rcol1, rcol2, rcol3]
-
-for i, (stage_name, data) in enumerate(stages.items()):
-    with cols[i]:
-        st.markdown(f"**{stage_name} Requirements**")
-        if data is None:
-            st.error(f"Cannot meet thrust. Max RPM ({rpm_empty:.0f}) reached or invalid curve.")
-        else:
-            p_color = "normal" if data["Power"] <= active_max_power else "inverse"
-            if data["Power"] > active_max_power:
-                st.error("**Power Exceeded Motor Max!**")
-
-            st.metric("Req. RPM", f"{data['RPM']:,.0f} RPM")
-            st.metric(
-                "Electrical Power",
-                f"{data['Power']:.1f} W",
-                f"Limit: {active_max_power} W",
-                delta_color=p_color,
-            )
-            st.metric("Prop Efficiency", f"{data['Efficiency']*100:.1f} %")
-
-# --- Plot Efficiency Curve ---
+# --- PLOT EFFICIENCY CURVE WITH DYNAMIC SEGMENTS ---
 j_plot = np.linspace(0.01, 1.2, 300)
 ct_plot = calc_poly(ct_coeffs, j_plot)
 cp_plot = calc_poly(cp_coeffs, j_plot)
@@ -1304,27 +1362,31 @@ fig_prop.add_trace(
     )
 )
 
-colors = {"Takeoff": "red", "Climb": "orange", "Cruise": "green"}
-for stage_name, data in stages.items():
-    if data is not None:
+color_palette = px.colors.qualitative.Plotly
+valid_idx = 0
+for seg_name, data in stages.items():
+    op = data["op"]
+    if op is not None:
         fig_prop.add_trace(
             go.Scatter(
-                x=[data["J"]],
-                y=[data["Efficiency"] * 100],
+                x=[op["J"]],
+                y=[op["Efficiency"] * 100],
                 mode="markers+text",
-                name=stage_name,
-                marker=dict(size=12, color=colors[stage_name], symbol="cross"),
-                text=[stage_name],
+                name=seg_name,
+                marker=dict(size=12, color=color_palette[valid_idx % len(color_palette)], symbol="cross"),
+                text=[seg_name],
                 textposition="top center",
             )
         )
+        valid_idx += 1
 
 fig_prop.update_layout(
-    title="Propeller Efficiency (η vs. J)",
+    title="Segment-Based Propeller Efficiency (η vs. J)",
     xaxis_title="Advance Ratio (J)",
     yaxis_title="Efficiency (%)",
     yaxis_range=[0, 100],
     hovermode="x unified",
+    margin=dict(l=20, r=20, t=40, b=20)
 )
 
 st.plotly_chart(fig_prop, use_container_width=True)
