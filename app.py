@@ -3,11 +3,14 @@ import re
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 
+# -------------------------------------------------------------
+# HELPER FUNCTIONS FOR PARSING
+# -------------------------------------------------------------
 def parse_prop_string(p_str):
     p_str = str(p_str).upper().strip()
     # 1. Check for explicit separators like '*' or 'X' (e.g., APC12*6, APC 10x4.5)
@@ -31,14 +34,27 @@ def parse_prop_string(p_str):
     return None, None
 
 
+def parse_locale_float(val):
+    """Safely parses numbers formatted in either Turkish (1.250,5) or standard (1250.5) locale."""
+    if pd.isna(val):
+        return np.nan
+    s = str(val).strip()
+    if "," in s and "." in s:
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    elif "," in s:
+        s = s.replace(",", ".")
+    match = re.search(r"[-+]?\d*\.?\d+", s)
+    return float(match.group(0)) if match else np.nan
+
+
 def safe_get_coef(row, key, default=0.0):
     """Safely extracts coefficient, avoiding NaN or missing column errors."""
     if key in row and pd.notna(row[key]):
-        try:
-            val_str = str(row[key]).replace(",", ".")
-            return float(val_str)
-        except Exception:
-            return default
+        val = parse_locale_float(row[key])
+        return val if pd.notna(val) else default
     return default
 
 
@@ -57,7 +73,7 @@ motor_sheet_gid = "1771767346"
 propeller_sheet_gid = "31584601"
 
 
-@st.cache_data
+@st.cache_data(ttl=300)
 def load_gsheet_csv(sheet_id, gid, header_row=0):
     url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
     try:
@@ -69,6 +85,7 @@ def load_gsheet_csv(sheet_id, gid, header_row=0):
 
 df_motors = load_gsheet_csv(database_sheet_id, motor_sheet_gid, header_row=2)
 df_props = load_gsheet_csv(database_sheet_id, propeller_sheet_gid, header_row=1)
+
 
 @st.cache_data(ttl=60)
 def load_and_clean_mass_table(sheet_id: str, gid: str):
@@ -131,14 +148,7 @@ def load_and_clean_mass_table(sheet_id: str, gid: str):
 
     for col in [weight_col, x_col, y_col, z_col]:
         if col and col in df.columns:
-            df[col] = (
-                df[col]
-                .astype(str)
-                .str.replace(".", "", regex=False)
-                .str.replace(",", ".", regex=False)
-                .str.extract(r"([-+]?\d*\.?\d+)", expand=False)
-                .astype(float)
-            )
+            df[col] = df[col].apply(parse_locale_float)
 
     rename_map = {urun_col: "Ürün", weight_col: "Ağırlık(gr)"}
     if kategori_col:
@@ -153,63 +163,61 @@ def load_and_clean_mass_table(sheet_id: str, gid: str):
 
     return df
 
+
 # Fallbacks
-live_mtow_kg = 3.0  # fallback manual weight in kg
-payload_mass_kg = 0.5  # fallback payload mass in kg
-x_cg_mm = 250.0  # fallback CG in mm
+live_mtow_kg = 3.0
+live_payload_kg = 0.5
+x_cg_mm = 250.0
 use_live_sheet = False
 
 try:
-  df_mass = load_and_clean_mass_table(design_sheet_id, design_sheet_gid)
-  total_mass_gr = df_mass["Ağırlık(gr)"].sum()
+    df_mass = load_and_clean_mass_table(design_sheet_id, design_sheet_gid)
+    total_mass_gr = df_mass["Ağırlık(gr)"].sum()
 
-  if total_mass_gr > 0:
-    live_mtow_kg = total_mass_gr / 1000.0
+    if total_mass_gr > 0:
+        live_mtow_kg = total_mass_gr / 1000.0
 
-    if "X (mm)" in df_mass.columns:
-      total_moment_x = (df_mass["Ağırlık(gr)"] * df_mass["X (mm)"]).sum()
-      x_cg_mm = total_moment_x / total_mass_gr
+        if "X (mm)" in df_mass.columns:
+            total_moment_x = (df_mass["Ağırlık(gr)"] * df_mass["X (mm)"]).sum()
+            x_cg_mm = total_moment_x / total_mass_gr
 
-    # --- Extract Payload Mass ---
-    if "Kategori" in df_mass.columns:
-      # Normalize categories to be robust against turkish characters and casing
-      norm_categories = (
-          df_mass["Kategori"]
-          .astype(str)
-          .str.lower()
-          .str.replace("ı", "i")
-          .str.replace("ü", "u")
-          .str.strip()
-      )
+        if "Kategori" in df_mass.columns:
+            norm_categories = (
+                df_mass["Kategori"]
+                .astype(str)
+                .str.lower()
+                .str.replace("ı", "i")
+                .str.replace("ü", "u")
+                .str.strip()
+            )
+            payload_mask = norm_categories.str.contains("faydali yuk|payload", regex=True)
+            payload_mass_gr = df_mass.loc[payload_mask, "Ağırlık(gr)"].sum()
+            live_payload_kg = payload_mass_gr / 1000.0
 
-      # Filter for 'faydali yuk' or 'payload'
-      payload_mask = norm_categories.str.contains("faydali yuk|payload", regex=True)
-      payload_mass_gr = df_mass.loc[payload_mask, "Ağırlık(gr)"].sum()
-      payload_mass_kg = payload_mass_gr / 1000.0
-
-    st.sidebar.success("Mass table synced from Drive.")
-    st.sidebar.metric("Live MTOW", f"{live_mtow_kg:.3f} kg")
-    st.sidebar.metric("Payload Mass", f"{payload_mass_kg:.3f} kg")
-    st.sidebar.metric("Longitudinal CG (from Nose)", f"{x_cg_mm:.1f} mm")
-    use_live_sheet = True
-  else:
-    st.sidebar.warning("Mass table is empty (sum = 0). Using manual defaults.")
+        st.sidebar.success("Mass table synced from Drive.")
+        st.sidebar.metric("Live MTOW", f"{live_mtow_kg:.3f} kg")
+        st.sidebar.metric("Payload Mass", f"{live_payload_kg:.3f} kg")
+        st.sidebar.metric("Longitudinal CG (from Nose)", f"{x_cg_mm:.1f} mm")
+        use_live_sheet = True
+    else:
+        st.sidebar.warning("Mass table is empty (sum = 0). Using manual defaults.")
 except Exception as e:
-  st.sidebar.warning(f"Could not load live sheet: {e}")
-  st.sidebar.info("Falling back to manual weights.")
+    st.sidebar.warning(f"Could not load live sheet: {e}")
+    st.sidebar.info("Falling back to manual weights.")
 
 # -------------------------------------------------------------
 # CONFIGURATION & STATE INITIALIZATION
 # -------------------------------------------------------------
 default_config = {
     "target_mtow": float(live_mtow_kg),
+    "payload_mass_kg": float(live_payload_kg),
     "v_to": 11.0,
     "s_g": 20.0,
     "runway_friction": 0.08,
     "v_cruise": 16.0,
     "v_climb": 13.0,
     "climb_rate": 3.0,
-    "v_descent": 3.0,
+    "v_descent": -3.0,  # Negative for descent
     "bank_angle": 45.0,
     "n_turn": 1.41,
     "v_stall": 10.0,
@@ -229,19 +237,19 @@ default_config = {
     "target_flight_time": 8.0,
     "time_fos": 1.2,
     "custom_speeds": {},
+    "next_seg_id": 6,
 }
 
-# Ensure every default key is guaranteed in st.session_state
 for key, val in default_config.items():
     if key not in st.session_state:
         st.session_state[key] = val
+
 
 # -------------------------------------------------------------
 # HELPER FUNCTIONS
 # -------------------------------------------------------------
 def get_velocity_dict():
     """Returns the complete dictionary of defined generic speeds (m/s)."""
-    # Use st.session_state.get() with fallback defaults to prevent AttributeErrors
     v_dict = {
         "Zero": 0.0,
         "V_stall": float(st.session_state.get("v_stall", 10.0)),
@@ -250,10 +258,9 @@ def get_velocity_dict():
         "V_climb": float(st.session_state.get("v_climb", 13.0)),
         "V_cruise": float(st.session_state.get("v_cruise", 16.0)),
         "V_vert_climb": float(st.session_state.get("climb_rate", 3.0)),
-        "V_descent": float(st.session_state.get("v_descent", 3.0)),
+        "V_descent": float(st.session_state.get("v_descent", -3.0)),
     }
 
-    # Safe retrieval of custom_speeds regardless of whether it's dict, list, or missing
     custom = st.session_state.get("custom_speeds", {})
     if isinstance(custom, dict):
         for k, v in custom.items():
@@ -261,15 +268,6 @@ def get_velocity_dict():
                 v_dict[str(k)] = float(v)
             except (ValueError, TypeError):
                 continue
-    elif isinstance(custom, list):
-        # Handles case where UI component saved it as list of tuples or dicts
-        for item in custom:
-            if isinstance(item, dict) and "name" in item and "value" in item:
-                try:
-                    v_dict[str(item["name"])] = float(item["value"])
-                except (ValueError, TypeError):
-                    continue
-
     return v_dict
 
 
@@ -382,6 +380,8 @@ if "mission_segments" not in st.session_state:
         st.session_state[f"seg_ground_{sid}"] = bool(seg["ground_roll"])
 
     st.session_state["mission_segments"] = default_specs
+    st.session_state["next_seg_id"] = 6
+
 
 # Callbacks for mission segment synchronization
 def sync_all_segments_from_global():
@@ -406,31 +406,58 @@ def sync_all_segments_from_global():
 
 
 def on_seg_frac_change(sid):
-    eff_t_min = get_effective_target_time()  # in minutes
-    frac = st.session_state[f"seg_frac_{sid}"]
+    eff_t_min = get_effective_target_time()
+    v_map = get_velocity_dict()
+    frac = float(st.session_state[f"seg_frac_{sid}"])
     t_min = round(frac * eff_t_min, 3)
     st.session_state[f"seg_time_{sid}"] = t_min
-    
-    # Distance (m) = Speed (m/s) * Time (s)
-    v_fwd = velocity_dict.get(st.session_state[f"seg_vfwd_{sid}"], 0.0)
-    st.session_state[f"seg_dist_{sid}"] = round(v_fwd * (t_min * 60.0), 1)
+
+    v_fwd = abs(v_map.get(st.session_state[f"seg_vfwd_{sid}"], 0.0))
+    d_m = round(v_fwd * (t_min * 60.0), 1)
+    st.session_state[f"seg_dist_{sid}"] = d_m
+    for seg in st.session_state.mission_segments:
+        if seg["id"] == sid:
+            seg["time_frac"] = frac
+            seg["time_m"] = t_min
+            seg["distance_m"] = d_m
+            break
+
 
 def on_seg_time_change(sid):
     eff_t_min = max(get_effective_target_time(), 1e-4)
-    t_min = st.session_state[f"seg_time_{sid}"]
-    st.session_state[f"seg_frac_{sid}"] = round(t_min / eff_t_min, 4)
-    
-    v_fwd = velocity_dict.get(st.session_state[f"seg_vfwd_{sid}"], 0.0)
-    st.session_state[f"seg_dist_{sid}"] = round(v_fwd * (t_min * 60.0), 1)
+    v_map = get_velocity_dict()
+    t_min = float(st.session_state[f"seg_time_{sid}"])
+    frac = round(t_min / eff_t_min, 4)
+    st.session_state[f"seg_frac_{sid}"] = frac
+
+    v_fwd = abs(v_map.get(st.session_state[f"seg_vfwd_{sid}"], 0.0))
+    d_m = round(v_fwd * (t_min * 60.0), 1)
+    st.session_state[f"seg_dist_{sid}"] = d_m
+    for seg in st.session_state.mission_segments:
+        if seg["id"] == sid:
+            seg["time_frac"] = frac
+            seg["time_m"] = t_min
+            seg["distance_m"] = d_m
+            break
+
 
 def on_seg_dist_change(sid):
-    v_fwd = velocity_dict.get(st.session_state[f"seg_vfwd_{sid}"], 0.0)
+    v_map = get_velocity_dict()
+    v_fwd = abs(v_map.get(st.session_state[f"seg_vfwd_{sid}"], 0.0))
     if v_fwd > 0:
-        d_m = st.session_state[f"seg_dist_{sid}"]
-        t_min = (d_m / v_fwd) / 60.0
-        st.session_state[f"seg_time_{sid}"] = round(t_min, 3)
+        d_m = float(st.session_state[f"seg_dist_{sid}"])
+        t_min = round((d_m / v_fwd) / 60.0, 3)
         eff_t_min = max(get_effective_target_time(), 1e-4)
-        st.session_state[f"seg_frac_{sid}"] = round(t_min / eff_t_min, 4)
+        frac = round(t_min / eff_t_min, 4)
+        st.session_state[f"seg_time_{sid}"] = t_min
+        st.session_state[f"seg_frac_{sid}"] = frac
+        for seg in st.session_state.mission_segments:
+            if seg["id"] == sid:
+                seg["time_frac"] = frac
+                seg["time_m"] = t_min
+                seg["distance_m"] = d_m
+                break
+
 
 def on_seg_vfwd_change(sid):
     v_map = get_velocity_dict()
@@ -445,8 +472,9 @@ def on_seg_vfwd_change(sid):
             seg["distance_m"] = float(new_d)
             break
 
+
 def add_mission_segment():
-    sid = int(st.session_state.next_seg_id)
+    sid = int(st.session_state.get("next_seg_id", len(st.session_state.mission_segments)))
     st.session_state.next_seg_id = sid + 1
     eff_t = get_effective_target_time()
     v_map = get_velocity_dict()
@@ -481,6 +509,7 @@ def add_mission_segment():
     st.session_state[f"seg_ground_{sid}"] = bool(new_seg["ground_roll"])
     st.session_state.mission_segments.append(new_seg)
 
+
 def remove_mission_segment(sid):
     st.session_state.mission_segments = [
         s for s in st.session_state.mission_segments if s["id"] != sid
@@ -500,10 +529,12 @@ def remove_mission_segment(sid):
     ]:
         st.session_state.pop(f"{prefix}{sid}", None)
 
+
 # Allow optional syncing rather than forcibly overwriting manual edits every rerun
 if use_live_sheet:
-    if st.sidebar.button("Sync Target MTOW with Live Sheet"):
+    if st.sidebar.button("Sync Target MTOW & Payload with Live Sheet"):
         st.session_state["target_mtow"] = float(live_mtow_kg)
+        st.session_state["payload_mass_kg"] = float(live_payload_kg)
 
 st.title("MES İHA Konsept Tasarım Aracı")
 
@@ -515,7 +546,8 @@ eta_motor_esc = st.sidebar.slider(
 def update_cd0_callback():
     st.session_state.cd0_active = st.session_state.temp_recalc_cd0
 
-#-------------------------------------------------------------
+
+# -------------------------------------------------------------
 # STAGE 1: MISSION PROFILE & GENERIC VELOCITY DEFINITIONS
 # -------------------------------------------------------------
 st.header("1. Görev Profili ve Parametreler")
@@ -570,7 +602,7 @@ with vcol5:
 with vcol6:
     v_descent = st.number_input(
         "V_descent (m/s)",
-        min_value=-10.0,
+        min_value=-15.0,
         max_value=0.0,
         step=0.5,
         key="v_descent",
@@ -626,6 +658,9 @@ col_p1, col_p2, col_p3 = st.columns(3)
 with col_p1:
     st.markdown("**Weights & Surface**")
     target_mtow = st.number_input("Target MTOW (kg)", min_value=0.1, step=0.1, key="target_mtow")
+    payload_mass_kg = st.number_input(
+        "Payload / Drop Mass (kg)", min_value=0.0, max_value=target_mtow, step=0.05, key="payload_mass_kg"
+    )
     s_g = st.number_input("Ground Run Limit S_g (m)", min_value=1.0, step=1.0, key="s_g")
     runway_friction = st.number_input(
         "Runway Friction Coefficient",
@@ -712,7 +747,7 @@ with mp_col2:
         on_change=sync_all_segments_from_global,
     )
 
-effective_target_time_min = get_effective_target_time()  # in minutes
+effective_target_time_min = get_effective_target_time()
 
 with mp_col3:
     st.metric(
@@ -797,7 +832,6 @@ for idx, seg in enumerate(list(st.session_state.mission_segments)):
                 args=(sid,),
             )
         with r2_c2:
-            # Displays and binds in MINUTES
             seg["time_m"] = st.number_input(
                 "Time (min)",
                 min_value=0.0,
@@ -843,8 +877,12 @@ with btn_col1:
         st.rerun()
 
 total_frac_sum = sum(s.get("time_frac", 0.0) for s in st.session_state.mission_segments)
-total_mission_time_min = sum(st.session_state.get(f"seg_time_{s['id']}", 0.0) for s in st.session_state.mission_segments)
-total_mission_dist_m = sum(st.session_state.get(f"seg_dist_{s['id']}", 0.0) for s in st.session_state.mission_segments)
+total_mission_time_min = sum(
+    st.session_state.get(f"seg_time_{s['id']}", 0.0) for s in st.session_state.mission_segments
+)
+total_mission_dist_m = sum(
+    st.session_state.get(f"seg_dist_{s['id']}", 0.0) for s in st.session_state.mission_segments
+)
 
 with btn_col2:
     if st.button("Normalize Time Fractions to 1.0", use_container_width=True):
@@ -866,6 +904,7 @@ with btn_col3:
         st.warning(status_text)
     else:
         st.success(status_text)
+
 # -------------------------------------------------------------
 # STAGE 2: P/W CONSTRAINT ANALYSIS
 # -------------------------------------------------------------
@@ -879,8 +918,10 @@ col_ar, col_plot = st.columns([1, 2])
 
 with col_ar:
     ar = st.slider("Aspect Ratio (AR)", 4.0, 12.0, 7.0, step=0.5)
-    e0 = max(0.1, 1.14 - 0.0801 * (ar**0.68))
+    # Raymer straight-wing Oswald efficiency, clamped to realistic small-UAV max of 0.85
+    e0 = float(np.clip(1.78 * (1.0 - 0.045 * (ar**0.68)) - 0.64, 0.1, 0.85))
     k_factor = 1.0 / (math.pi * ar * e0)
+    st.caption(f"Oswald Efficiency ($e_0$): **{e0:.3f}** | Induced Drag Factor ($k$): **{k_factor:.4f}**")
 
     max_ws_plot = st.number_input("Plot Max W/S (kg/m^2)", value=16.0, step=1.0)
     max_pw_plot = st.number_input("Plot Max P/W (W/kg)", value=350.0, step=25.0)
@@ -894,11 +935,14 @@ with col_ar:
     ws_crit_pa = q_stall * cl_max_est
     opt_ws_kgm2 = ws_crit_pa / g
 
+    sin_gamma_cl = np.clip(climb_rate / v_climb, 0.0, 0.95)
+    cos_gamma_cl = math.sqrt(1.0 - sin_gamma_cl**2)
+
     tw_cruise = (q_cruise * cd0_active / ws_crit_pa) + (k_factor * ws_crit_pa / q_cruise)
     tw_climb = (
-        (climb_rate / v_climb)
+        sin_gamma_cl
         + (q_climb * cd0_active / ws_crit_pa)
-        + (k_factor * ws_crit_pa / q_climb)
+        + (k_factor * (cos_gamma_cl**2) * ws_crit_pa / q_climb)
     )
     tw_turn = q_cruise * (
         (cd0_active / ws_crit_pa) + ws_crit_pa * k_factor * ((n_turn / q_cruise) ** 2)
@@ -906,7 +950,7 @@ with col_ar:
     tw_to = (
         ((v_to**2) / (2 * g * s_g))
         + (q_to_avg * cd_to / ws_crit_pa)
-        + runway_friction * (1.0 - (q_to_avg * cl_to / ws_crit_pa))
+        + runway_friction * max(0.0, 1.0 - (q_to_avg * cl_to / ws_crit_pa))
     )
 
     pw_crit = {
@@ -933,9 +977,9 @@ with col_plot:
 
     tw_c = (q_cruise * cd0_active / ws_pa_range) + (k_factor * ws_pa_range / q_cruise)
     tw_cl = (
-        (climb_rate / v_climb)
+        sin_gamma_cl
         + (q_climb * cd0_active / ws_pa_range)
-        + (k_factor * ws_pa_range / q_climb)
+        + (k_factor * (cos_gamma_cl**2) * ws_pa_range / q_climb)
     )
     tw_t = q_cruise * (
         (cd0_active / ws_pa_range) + ws_pa_range * k_factor * ((n_turn / q_cruise) ** 2)
@@ -943,7 +987,7 @@ with col_plot:
     tw_to_curve = (
         ((v_to**2) / (2 * g * s_g))
         + (q_to_avg * cd_to / ws_pa_range)
-        + runway_friction * (1.0 - (q_to_avg * cl_to / ws_pa_range))
+        + runway_friction * np.maximum(0.0, 1.0 - (q_to_avg * cl_to / ws_pa_range))
     )
 
     pw_c = (tw_c * g * v_cruise) / (eta_cruise * eta_motor_esc)
@@ -995,7 +1039,7 @@ with col_bat1:
 with col_bat2:
     batt_cap = st.number_input("Battery Capacity (mAh)", min_value=100, max_value=50000, value=5000, step=100)
 
-total_energy_wh = batt_cap/1000 * batt_s*3.7
+total_energy_wh = (batt_cap / 1000.0) * batt_s * 3.7
 
 st.markdown("---")
 
@@ -1058,7 +1102,7 @@ with col_el1:
     v_batt_nominal = batt_s * 3.7
     rpm_empty = active_kv * v_batt_nominal
 
-    st.metric("Empty RPM (Nominal Voltage)", f"{rpm_empty:,.0f} RPM", f"{v_batt_nominal:.1f} V")
+    st.metric("No-Load RPM (Nominal Voltage)", f"{rpm_empty:,.0f} RPM", f"{v_batt_nominal:.1f} V")
 
     sim_current = st.slider(
         "Simulate Current Draw (A)", 0.0, float(active_max_amp), value=float(active_max_amp) / 2.0
@@ -1067,7 +1111,7 @@ with col_el1:
     rpm_loaded = active_kv * max(0.0, v_batt_nominal - v_drop)
 
     st.metric(
-        f"Loaded RPM @ {sim_current:.1f}A",
+        f"Loaded Max RPM @ {sim_current:.1f}A",
         f"{rpm_loaded:,.0f} RPM",
         f"Voltage Drop: -{v_drop:.2f} V",
         delta_color="inverse",
@@ -1120,21 +1164,18 @@ with col_el2:
                     f"Matched Profile: **{prop_data.get('Üretici', '')} {active_prop_dia_inch}x{prop_data.get('Pitch', '')}**"
                 )
 
-                raw_ct = [
+                ct_coeffs = [
                     safe_get_coef(prop_data, "CT vs J (a)"),
                     safe_get_coef(prop_data, "CT vs J (b)"),
                     safe_get_coef(prop_data, "CT vs J (c)"),
                     safe_get_coef(prop_data, "CT vs J (d)"),
                 ]
-                raw_cp = [
+                cp_coeffs = [
                     safe_get_coef(prop_data, "CP vs J (a)"),
                     safe_get_coef(prop_data, "CP vs J (b)"),
                     safe_get_coef(prop_data, "CP vs J (c)"),
                     safe_get_coef(prop_data, "CP vs J (d)"),
                 ]
-
-                ct_coeffs = raw_ct
-                cp_coeffs = raw_cp
             else:
                 st.warning(
                     f"Extracted [Dia: {target_dia}\", Pitch: {target_pitch}\"] from '{prop_choice}', "
@@ -1165,113 +1206,163 @@ with col_el2:
 
 
 # ---------------------------------------------------------
-# PERFORMANCE, FLIGHT STAGES & EFFICIENCY CURVE
+# 4. PROPULSION, FLIGHT STAGES & EFFICIENCY CURVE
 # ---------------------------------------------------------
 st.markdown("---")
 st.subheader("4. Propulsion & Mission Segment Analysis")
 
-# Polynomial resolver
+
 def calc_poly(coeffs, j):
     return coeffs[0] * (j**3) + coeffs[1] * (j**2) + coeffs[2] * j + coeffs[3]
 
+
 D_m = active_prop_dia_inch * 0.0254
 
-def find_operating_point(V, T_req, rpm_max, ct_cf, cp_cf):
-    if rpm_max <= 100 or D_m <= 0:
-        return None
-    rpms = np.linspace(100, rpm_max, 1500)
-    ns = rpms / 60.0
 
-    Js = V / (ns * D_m)
+def find_operating_point(V, T_req, v_batt, kv, ir_mohm, rho_local, ct_cf, cp_cf):
+    """Finds propeller operating point accounting for altitude density and motor voltage sag under load."""
+    if T_req <= 0.1:
+        return {"RPM": 0.0, "J": 0.0, "Power": 0.0, "Current": 0.0, "Efficiency": 0.0, "Idle": True}
+
+    rpm_no_load = kv * v_batt
+    if rpm_no_load <= 100 or D_m <= 0:
+        return None
+
+    rpms = np.linspace(100, rpm_no_load, 1500)
+    ns = rpms / 60.0
+    V_eff = max(V, 0.1)
+
+    Js = V_eff / (ns * D_m)
     CTs = calc_poly(ct_cf, Js)
     CPs = calc_poly(cp_cf, Js)
 
-    valid = (CTs > 0) & (CPs > 0)
+    # Calculate electrical power and current at each RPM to check motor voltage sag limit
+    P_aero = rho_local * (ns**3) * (D_m**5) * np.maximum(CPs, 0.0)
+    P_elec = P_aero / eta_motor_esc
+    I_req = P_elec / max(v_batt, 0.1)
+
+    v_loaded = v_batt - I_req * (ir_mohm / 1000.0)
+    rpm_max_loaded = kv * np.maximum(0.0, v_loaded)
+
+    valid = (CTs > 0) & (CPs > 0) & (rpms <= rpm_max_loaded)
     if not np.any(valid):
         return None
 
-    ns, CTs, CPs, Js = ns[valid], CTs[valid], CPs[valid], Js[valid]
+    ns_v, CTs_v, CPs_v, Js_v = ns[valid], CTs[valid], CPs[valid], Js[valid]
+    P_elec_v, I_req_v = P_elec[valid], I_req[valid]
 
-    T_avail = rho * (ns**2) * (D_m**4) * CTs
+    T_avail = rho_local * (ns_v**2) * (D_m**4) * CTs_v
 
     if np.max(T_avail) < T_req:
-        return None  # Max RPM reached, can't produce required thrust
+        return None
 
     idx = np.argmin(np.abs(T_avail - T_req))
-    P_aero = rho * (ns[idx] ** 3) * (D_m**5) * CPs[idx]
-    P_elec = P_aero / eta_motor_esc
-    eta = Js[idx] * (CTs[idx] / CPs[idx]) if CPs[idx] > 0 else 0.0
+    eta = Js_v[idx] * (CTs_v[idx] / CPs_v[idx]) if CPs_v[idx] > 0 else 0.0
 
-    return {"RPM": ns[idx] * 60.0, "J": Js[idx], "Power": P_elec, "Efficiency": eta}
+    return {
+        "RPM": float(ns_v[idx] * 60.0),
+        "J": float(Js_v[idx]),
+        "Power": float(P_elec_v[idx]),
+        "Current": float(I_req_v[idx]),
+        "Efficiency": float(np.clip(eta, 0.0, 1.0)),
+        "Idle": False,
+    }
 
-# --- DYNAMIC SEGMENT PHYSICS CALCULATION ---
-payload_mass_kg = st.session_state.get("payload_mass_kg", 0.0) # Fallback
 
+# --- UNIFIED DYNAMIC SEGMENT PHYSICS CALCULATION ---
 seg_analysis_data = []
 for idx, seg in enumerate(st.session_state.mission_segments):
     sid = seg["id"]
-    seg_name = seg.get("name", f"Seg {idx+1}")
+    seg_name = st.session_state.get(f"seg_name_{sid}", seg.get("name", f"Seg {idx+1}"))
 
-    # 1. Hızlar
+    # 1. Velocities
     v_fwd_key = st.session_state.get(f"seg_vfwd_{sid}", "V_cruise")
-    V_fwd = velocity_dict.get(v_fwd_key, 10.0)
-    
+    V_fwd = abs(velocity_dict.get(v_fwd_key, 16.0))
+
     v_vert_key = st.session_state.get(f"seg_vvert_{sid}", "Zero")
     V_vert = velocity_dict.get(v_vert_key, 0.0)
 
-    # 2. İrtifa ve Atmosfer
-    alt = seg.get("altitude", 0.0)
-    rho_alt = rho * (1 - 2.25577e-5 * alt)**4.2561 if alt > 0 else rho
+    # 2. Altitude & ISA Atmosphere Density
+    alt = float(st.session_state.get(f"seg_alt_{sid}", seg.get("altitude", 0.0)))
+    rho_alt = rho * ((1.0 - 2.25577e-5 * alt) ** 4.2561) if alt > 0 else rho
 
-    # 3. Kütle Durumu
-    is_loaded = seg.get("loaded", True)
+    # 3. Mass State (Loaded vs Dropped Payload)
+    is_loaded = bool(st.session_state.get(f"seg_loaded_{sid}", seg.get("loaded", True)))
     mass = target_mtow if is_loaded else max(0.1, target_mtow - payload_mass_kg)
     W = mass * g
 
-    # 4. Aerodinamik Çözümleme
-    V_fwd_calc = max(V_fwd, 0.1)
-    q = 0.5 * rho_alt * (V_fwd_calc**2)
-    
-    bank_deg = seg.get("bank_angle", 0.0)
-    n_load = 1.0 / max(np.cos(np.radians(bank_deg)), 0.01)
-    
-    L = W * n_load
-    CL = L / (q * s_req)
-    D = q * s_req * (cd0_active + k_factor * (CL**2))
-    
-    sin_gamma = np.clip(V_vert / V_fwd_calc, -1.0, 1.0)
-    T_req = D + (W * sin_gamma)
+    # 4. Aerodynamic & Ground Roll Resolution
+    is_ground = bool(st.session_state.get(f"seg_ground_{sid}", seg.get("ground_roll", False)))
+    if is_ground:
+        # Avoid double-dividing by sqrt(2) if V_to_avg is selected
+        if v_fwd_key == "V_to_avg":
+            V_liftoff = v_to
+            V_op = V_fwd
+        else:
+            V_liftoff = V_fwd
+            V_op = V_fwd / math.sqrt(2.0)
 
-    # 5. Ground Roll (Kalkış Koşusu Özel Durumu)
-    if seg.get("ground_roll", False):
-        V_fwd_avg = V_fwd / math.sqrt(2)
-        q_to = 0.5 * rho_alt * (max(V_fwd_avg, 0.1)**2)
-        # Kalkış ivmelenmesi + Aerodinamik Direnç + Yuvarlanma Direnci
-        T_req = ((V_fwd**2) / (2 * g * s_g)) * W + (q_to * s_req * cd_to) + runway_friction * (W - (q_to * s_req * cl_to))
-        V_op = V_fwd_avg
+        q_to = 0.5 * rho_alt * (max(V_op, 0.1) ** 2)
+        accel_force = ((V_liftoff**2) / (2.0 * g * s_g)) * W
+        drag_force = q_to * s_req * cd_to
+        Lift_to = q_to * s_req * cl_to
+        fric_force = runway_friction * max(0.0, W - Lift_to)
+        T_req = accel_force + drag_force + fric_force
     else:
-        V_op = V_fwd
+        V_op = max(V_fwd, 0.1)
+        q = 0.5 * rho_alt * (V_op**2)
 
-    seg_analysis_data.append({
-        "Segment": seg_name,
-        "V_op (m/s)": round(V_op, 2),
-        "Alt (m)": alt,
-        "Mass (kg)": round(mass, 2),
-        "Calc. Thrust (N)": max(0.0, round(T_req, 2))
-    })
+        sin_gamma = np.clip(V_vert / V_op, -0.95, 0.95)
+        cos_gamma = math.sqrt(1.0 - sin_gamma**2)
+
+        bank_deg = float(st.session_state.get(f"seg_bank_{sid}", seg.get("bank_angle", 0.0)))
+        pct_bank = np.clip(
+            float(st.session_state.get(f"seg_pbank_{sid}", seg.get("pct_banked", 0.0))) / 100.0,
+            0.0,
+            1.0,
+        )
+        n_bank = 1.0 / max(np.cos(np.radians(bank_deg)), 0.1)
+
+        cl_level = (W * cos_gamma) / (q * s_req)
+        cl_banked = (W * n_bank) / (q * s_req)
+
+        cd_level = cd0_active + k_factor * (cl_level**2)
+        cd_banked = cd0_active + k_factor * (cl_banked**2)
+        cd_eff = (1.0 - pct_bank) * cd_level + pct_bank * cd_banked
+
+        D = q * s_req * cd_eff
+        T_req = max(0.0, D + (W * sin_gamma))
+
+    seg_analysis_data.append(
+        {
+            "id": sid,
+            "Segment": seg_name,
+            "V_op (m/s)": round(V_op, 2),
+            "V_vert (m/s)": round(V_vert, 2),
+            "Alt (m)": alt,
+            "Rho (kg/m3)": round(rho_alt, 3),
+            "Mass (kg)": round(mass, 2),
+            "Calc. Thrust (N)": max(0.0, round(T_req, 2)),
+        }
+    )
 
 # --- DATA EDITOR (MANUAL OVERRIDE INTERFACE) ---
-st.info("💡 Aşağıdaki tablo her segment için ağırlık, irtifa, yatış ve tırmanma açısına göre **Gereken İtkiyi (N)** dinamik hesaplar. Herhangi bir değeri değiştirmek (override) için tablodaki itki sütununa tıklayabilirsiniz.")
+st.info(
+    "Aşağıdaki tablo her segment için ağırlık, irtifa, yatış yüzdesi ve tırmanma/alçalma açısına göre "
+    "**Gereken İtkiyi (N)** dinamik hesaplar. İtkiyi manuel ezmek (override) için tablodaki değere çift tıklayabilirsiniz."
+)
 
 df_segments = pd.DataFrame(seg_analysis_data)
 edited_df = st.data_editor(
-    df_segments,
+    df_segments.drop(columns=["id", "V_vert (m/s)", "Rho (kg/m3)"]),
     column_config={
-        "Calc. Thrust (N)": st.column_config.NumberColumn("Required Thrust (N)", min_value=0.0, step=0.1, format="%.2f N")
+        "Calc. Thrust (N)": st.column_config.NumberColumn(
+            "Required Thrust (N)", min_value=0.0, step=0.1, format="%.2f N"
+        )
     },
     disabled=["Segment", "V_op (m/s)", "Alt (m)", "Mass (kg)"],
     use_container_width=True,
-    hide_index=True
+    hide_index=True,
 )
 
 # --- OPERATING POINTS & PERFORMANCE VERIFICATION ---
@@ -1279,65 +1370,93 @@ stages = {}
 results_list = []
 
 for idx, row in edited_df.iterrows():
+    seg_meta = seg_analysis_data[idx]
+    sid = seg_meta["id"]
     seg_name = row["Segment"]
     V_op = row["V_op (m/s)"]
     T_req = row["Calc. Thrust (N)"]
+    rho_alt = seg_meta["Rho (kg/m3)"]
 
-    op = find_operating_point(V_op, T_req, rpm_empty, ct_coeffs, cp_coeffs)
-    stages[seg_name] = {"op": op, "V": V_op}
+    op = find_operating_point(
+        V_op, T_req, v_batt_nominal, active_kv, active_ir_mohm, rho_alt, ct_coeffs, cp_coeffs
+    )
+    stages[sid] = {"name": seg_name, "op": op, "V": V_op, "T_req": T_req, "rho": rho_alt}
 
-    if op is None:
-        results_list.append({
-            "Segment": seg_name,
-            "Status": "❌ RPM/Thrust Yetersiz",
-            "Req. RPM": None,
-            "Elec. Power (W)": None,
-            "Efficiency (%)": None
-        })
-    elif op["Power"] > active_max_power:
-        results_list.append({
-            "Segment": seg_name,
-            "Status": "⚠️ Max Güç Aşıldı!",
-            "Req. RPM": f"{op['RPM']:,.0f}",
-            "Elec. Power (W)": round(op["Power"], 1),
-            "Efficiency (%)": round(op["Efficiency"]*100, 1)
-        })
+    if op is not None and op.get("Idle", False):
+        results_list.append(
+            {
+                "Segment": seg_name,
+                "Status": "🛬 Glide / Idle",
+                "Req. RPM": "Idle",
+                "Current (A)": 0.0,
+                "Elec. Power (W)": 0.0,
+                "Efficiency (%)": "N/A",
+            }
+        )
+    elif op is None:
+        results_list.append(
+            {
+                "Segment": seg_name,
+                "Status": "❌ Insufficient RPM/Thrust",
+                "Req. RPM": "N/A",
+                "Current (A)": None,
+                "Elec. Power (W)": None,
+                "Efficiency (%)": "N/A",
+            }
+        )
+    elif op["Power"] > active_max_power or op["Current"] > active_max_amp:
+        results_list.append(
+            {
+                "Segment": seg_name,
+                "Status": "⚠️ Motor Limit Exceeded!",
+                "Req. RPM": f"{op['RPM']:,.0f}",
+                "Current (A)": round(op["Current"], 1),
+                "Elec. Power (W)": round(op["Power"], 1),
+                "Efficiency (%)": round(op["Efficiency"] * 100, 1),
+            }
+        )
     else:
-        results_list.append({
-            "Segment": seg_name,
-            "Status": "✅ Uygun",
-            "Req. RPM": f"{op['RPM']:,.0f}",
-            "Elec. Power (W)": round(op["Power"], 1),
-            "Efficiency (%)": round(op["Efficiency"]*100, 1)
-        })
+        results_list.append(
+            {
+                "Segment": seg_name,
+                "Status": "✅ Optimal",
+                "Req. RPM": f"{op['RPM']:,.0f}",
+                "Current (A)": round(op["Current"], 1),
+                "Elec. Power (W)": round(op["Power"], 1),
+                "Efficiency (%)": round(op["Efficiency"] * 100, 1),
+            }
+        )
 
 st.markdown("**Segment Propeller Performance Summary**")
 st.dataframe(pd.DataFrame(results_list), hide_index=True, use_container_width=True)
 
-# --- GLOBAL EFFICIENCY FEEDBACK (P/W GRAFİĞİNİ GÜNCELLEMEK İÇİN) ---
+# --- GLOBAL EFFICIENCY FEEDBACK (WITH DAMPING TO PREVENT INFINITE RERUN LOOPS) ---
 avg_etas = {"Takeoff": [], "Climb": [], "Cruise": []}
 
-for idx, seg in enumerate(st.session_state.mission_segments):
-    seg_name = seg.get("name", f"Seg {idx+1}")
-    op = stages.get(seg_name, {}).get("op")
-    
-    if op is not None and 0.05 < op["Efficiency"] <= 1.0:
-        v_vert_val = velocity_dict.get(st.session_state.get(f"seg_vvert_{seg['id']}", "Zero"), 0.0)
-        if seg.get("ground_roll", False):
+for seg in st.session_state.mission_segments:
+    sid = seg["id"]
+    stage_info = stages.get(sid, {})
+    op = stage_info.get("op")
+
+    if op is not None and not op.get("Idle", False) and 0.05 < op["Efficiency"] <= 1.0:
+        v_vert_val = velocity_dict.get(st.session_state.get(f"seg_vvert_{sid}", "Zero"), 0.0)
+        is_ground = bool(st.session_state.get(f"seg_ground_{sid}", seg.get("ground_roll", False)))
+        if is_ground:
             avg_etas["Takeoff"].append(op["Efficiency"])
-        elif v_vert_val > 0.0:
+        elif v_vert_val > 0.05:
             avg_etas["Climb"].append(op["Efficiency"])
-        else:
+        elif v_vert_val >= -0.05:
             avg_etas["Cruise"].append(op["Efficiency"])
 
 needs_rerun = False
 stage_key_map = {"Takeoff": "eta_to", "Climb": "eta_climb", "Cruise": "eta_cruise"}
 for cat, key in stage_key_map.items():
     if avg_etas[cat]:
-        new_eta = sum(avg_etas[cat]) / len(avg_etas[cat]) # O kategoriye ait segmentlerin ortalaması
+        new_eta = sum(avg_etas[cat]) / len(avg_etas[cat])
         old_eta = st.session_state.get(key, 0.7)
-        if abs(new_eta - old_eta) > 0.015:
-            st.session_state[key] = round(new_eta, 3)
+        if abs(new_eta - old_eta) > 0.02:
+            # Damped update (50% step) to prevent limit-cycle oscillations
+            st.session_state[key] = round(0.5 * old_eta + 0.5 * new_eta, 3)
             needs_rerun = True
 
 if needs_rerun:
@@ -1365,17 +1484,19 @@ fig_prop.add_trace(
 
 color_palette = px.colors.qualitative.Plotly
 valid_idx = 0
-for seg_name, data in stages.items():
+for sid, data in stages.items():
     op = data["op"]
-    if op is not None:
+    if op is not None and not op.get("Idle", False):
         fig_prop.add_trace(
             go.Scatter(
                 x=[op["J"]],
                 y=[op["Efficiency"] * 100],
                 mode="markers+text",
-                name=seg_name,
-                marker=dict(size=12, color=color_palette[valid_idx % len(color_palette)], symbol="cross"),
-                text=[seg_name],
+                name=data["name"],
+                marker=dict(
+                    size=12, color=color_palette[valid_idx % len(color_palette)], symbol="cross"
+                ),
+                text=[data["name"]],
                 textposition="top center",
             )
         )
@@ -1387,7 +1508,7 @@ fig_prop.update_layout(
     yaxis_title="Efficiency (%)",
     yaxis_range=[0, 100],
     hovermode="x unified",
-    margin=dict(l=20, r=20, t=40, b=20)
+    margin=dict(l=20, r=20, t=40, b=20),
 )
 
 st.plotly_chart(fig_prop, use_container_width=True)
@@ -1398,7 +1519,6 @@ st.plotly_chart(fig_prop, use_container_width=True)
 st.markdown("---")
 st.subheader("Mission Energy & Battery Depletion Analysis")
 
-# --- 1. Battery Specification Controls ---
 b_col3, b_col4 = st.columns(2)
 
 with b_col3:
@@ -1421,114 +1541,68 @@ with b_col4:
         help="Telemetry, flight controller, receiver, and onboard computer baseline load.",
     )
 
-# --- 2. Helper: Calculate Required Thrust for Any Mission Segment ---
-def calculate_segment_thrust(seg, v_fwd, v_vert):
-    m_active = target_mtow if seg.get("loaded", True) else max(0.1, target_mtow - payload_mass_kg)
-    weight_n = m_active * g
-    q = 0.5 * rho * (max(v_fwd, 1.0) ** 2)
-
-    if seg.get("ground_roll", False):
-        q_to = 0.5 * rho * ((v_to / math.sqrt(2.0)) ** 2)
-        accel_term = (v_to ** 2) / (2.0 * g * s_g)
-        drag_term = (q_to * s_req * cd_to) / weight_n
-        fric_term = runway_friction * (1.0 - (q_to * s_req * cl_to) / weight_n)
-        t_req = weight_n * (accel_term + drag_term + max(0.0, fric_term))
-    elif v_vert > 0.05 and v_fwd > 0.1:
-        sin_gamma = np.clip(v_vert / v_fwd, 0.0, 0.9)
-        cos_gamma = math.sqrt(1.0 - sin_gamma**2)
-        cl_seg = (weight_n * cos_gamma) / (q * s_req)
-        cd_seg = cd0_active + k_factor * (cl_seg ** 2)
-        t_req = (q * s_req * cd_seg) + (weight_n * sin_gamma)
-    elif v_vert < -0.05 and v_fwd > 0.1:
-        sin_gamma = np.clip(abs(v_vert) / v_fwd, 0.0, 0.9)
-        cos_gamma = math.sqrt(1.0 - sin_gamma**2)
-        cl_seg = (weight_n * cos_gamma) / (q * s_req)
-        cd_seg = cd0_active + k_factor * (cl_seg ** 2)
-        t_req = max(0.5, (q * s_req * cd_seg) - (weight_n * sin_gamma))
-    else:
-        bank_deg = float(seg.get("bank_angle", 0.0))
-        pct_bank = float(seg.get("pct_banked", 0.0)) / 100.0
-        n_turn_seg = 1.0 / max(np.cos(np.radians(bank_deg)), 0.2)
-        cl_level = weight_n / (q * s_req)
-        cd_level = cd0_active + k_factor * (cl_level ** 2)
-        cd_banked = cd0_active + k_factor * ((cl_level * n_turn_seg) ** 2)
-        cd_eff = (1.0 - pct_bank) * cd_level + pct_bank * cd_banked
-        t_req = q * s_req * cd_eff
-
-    return max(0.5, float(t_req))
-
-
-# --- 3. Per-Segment Power, Time & Energy Step Simulation ---
+# --- Per-Segment Power, Time & Energy Step Simulation (Driven Directly by Stage 4) ---
 segment_energy_records = []
-remaining_capacity_mah = batt_cap
-remaining_energy_wh = total_energy_wh
+remaining_capacity_mah = float(batt_cap)
+remaining_energy_wh = float(total_energy_wh)
 has_power_failure = False
 
 for seg in st.session_state.mission_segments:
     sid = seg["id"]
-    seg_name = st.session_state.get(f"seg_name_{sid}", seg.get("name", f"Seg {sid}"))
+    stage_data = stages[sid]
+    seg_name = stage_data["name"]
     t_min = float(st.session_state.get(f"seg_time_{sid}", seg.get("time_m", 0.0)))
     t_sec = t_min * 60.0
 
-    # Retrieve associated speeds
-    v_fwd_label = st.session_state.get(f"seg_vfwd_{sid}", seg.get("v_forward", "V_cruise"))
-    v_vert_label = st.session_state.get(f"seg_vvert_{sid}", seg.get("v_vert", "Zero"))
-    v_fwd = float(velocity_dict.get(v_fwd_label, 16.0))
-    v_vert = float(velocity_dict.get(v_vert_label, 0.0))
-
-    # Required thrust & operating point search
-    t_req = calculate_segment_thrust(seg, v_fwd, v_vert)
-    op_point = find_operating_point(max(v_fwd, 0.5), t_req, rpm_empty, ct_coeffs, cp_coeffs)
+    t_req = stage_data["T_req"]
+    v_op = stage_data["V"]
+    op_point = stage_data["op"]
 
     if op_point is not None:
         p_prop_elec = op_point["Power"]
         prop_rpm = op_point["RPM"]
-        prop_eta = op_point["Efficiency"]
     else:
-        # Fallback approximation if curve limits are exceeded
+        # Fallback approximation only when thrust genuinely exceeds motor/prop limits
         has_power_failure = True
-        p_prop_elec = (t_req * max(v_fwd, 1.0)) / (st.session_state.get("eta_cruise") * st.session_state.get("eta_motor_esc"))
+        p_prop_elec = (t_req * max(v_op, 1.0)) / (
+            st.session_state.get("eta_cruise", 0.72) * eta_motor_esc
+        )
         prop_rpm = rpm_empty
-        prop_eta = 0.50
-        st.error("Fallback to assumed values due to inability to find op_point.")
-
 
     p_total_elec = p_prop_elec + avionics_power_w
-    avg_current_a = p_total_elec / (batt_s * 3.7)
+    avg_current_a = p_total_elec / v_batt_nominal
 
-    # Energy spent in this segment
     spent_wh = p_total_elec * (t_sec / 3600.0)
     spent_mah = (avg_current_a * (t_sec / 3600.0)) * 1000.0
 
-    # Draw down from battery
-    rem_mah_before = remaining_capacity_mah
     remaining_capacity_mah -= spent_mah
     remaining_energy_wh -= spent_wh
     current_soc_pct = max(0.0, (remaining_capacity_mah / batt_cap) * 100.0)
 
-    segment_energy_records.append({
-        "Segment": seg_name,
-        "Duration (min)": t_min,
-        "Req Thrust (N)": t_req,
-        "Prop RPM": prop_rpm,
-        "Total Power (W)": p_total_elec,
-        "Current Draw (A)": avg_current_a,
-        "Energy Spent (Wh)": spent_wh,
-        "Capacity Spent (mAh)": spent_mah,
-        "Ending SOC (%)": current_soc_pct,
-        "Rem. Cap (mAh)": max(0.0, remaining_capacity_mah),
-    })
+    segment_energy_records.append(
+        {
+            "Segment": seg_name,
+            "Duration (min)": t_min,
+            "Req Thrust (N)": t_req,
+            "Prop RPM": prop_rpm,
+            "Total Power (W)": p_total_elec,
+            "Current Draw (A)": avg_current_a,
+            "Energy Spent (Wh)": spent_wh,
+            "Capacity Spent (mAh)": spent_mah,
+            "Ending SOC (%)": current_soc_pct,
+            "Rem. Cap (mAh)": max(0.0, remaining_capacity_mah),
+        }
+    )
 
 df_mission_energy = pd.DataFrame(segment_energy_records)
 
-# --- 4. Mission Summary Metrics ---
+# --- Mission Summary Metrics ---
 total_spent_mah = sum(r["Capacity Spent (mAh)"] for r in segment_energy_records)
 total_spent_wh = sum(r["Energy Spent (Wh)"] for r in segment_energy_records)
 final_soc = max(0.0, (remaining_capacity_mah / batt_cap) * 100.0)
+total_dur_hr = sum(r["Duration (min)"] for r in segment_energy_records) / 60.0
 avg_mission_current = (
-    total_spent_mah / (sum(r["Duration (min)"] for r in segment_energy_records) / 60.0 * 1000.0)
-    if total_spent_mah > 0
-    else 0.0
+    (total_spent_mah / 1000.0) / total_dur_hr if total_dur_hr > 0 else 0.0
 )
 
 m_b1, m_b2, m_b3, m_b4 = st.columns(4)
@@ -1560,7 +1634,6 @@ with m_b4:
         f"Pack C-Rate: {avg_mission_current / (batt_cap / 1000.0):.2f}C",
     )
 
-# Warnings & Status checks
 if final_soc < reserve_soc_pct:
     st.error(
         f"**Battery Reserve Violated!** Mission ends at **{final_soc:.1f}% SOC**, "
@@ -1575,26 +1648,29 @@ else:
     )
 
 if has_power_failure:
-    st.warning("One or more segments required thrust outside the motor/prop valid operating regime.")
+    st.warning(
+        "One or more powered segments required thrust exceeding the motor/propeller achievable operating envelope. "
+        "Fallback efficiency assumptions were used for those segments."
+    )
 
-# --- 5. Segment Breakdown Table & Discharge Visuals ---
 with st.expander("Detailed Segment Energy Consumption Table", expanded=True):
     st.dataframe(
-        df_mission_energy.style.format({
-            "Duration (min)": "{:.2f}",
-            "Req Thrust (N)": "{:.2f}",
-            "Prop RPM": "{:,.0f}",
-            "Total Power (W)": "{:.1f}",
-            "Current Draw (A)": "{:.2f}",
-            "Energy Spent (Wh)": "{:.2f}",
-            "Capacity Spent (mAh)": "{:,.1f}",
-            "Ending SOC (%)": "{:.1f}%",
-            "Rem. Cap (mAh)": "{:,.0f}",
-        }),
+        df_mission_energy.style.format(
+            {
+                "Duration (min)": "{:.2f}",
+                "Req Thrust (N)": "{:.2f}",
+                "Prop RPM": "{:,.0f}",
+                "Total Power (W)": "{:.1f}",
+                "Current Draw (A)": "{:.2f}",
+                "Energy Spent (Wh)": "{:.2f}",
+                "Capacity Spent (mAh)": "{:,.1f}",
+                "Ending SOC (%)": "{:.1f}%",
+                "Rem. Cap (mAh)": "{:,.0f}",
+            }
+        ),
         use_container_width=True,
     )
 
-# --- 6. Step-down SOC Waterfall / Depletion Plot ---
 fig_soc = go.Figure()
 
 fig_soc.add_trace(
@@ -1623,7 +1699,6 @@ fig_soc.add_trace(
     )
 )
 
-# Reference reserve line
 fig_soc.add_hline(
     y=reserve_soc_pct,
     line_dash="dash",
@@ -1651,9 +1726,9 @@ st.plotly_chart(fig_soc, use_container_width=True)
 st.markdown("---")
 
 # -------------------------------------------------------------
-# STAGE 4: WING SIZING
+# STAGE 5: WING SIZING
 # -------------------------------------------------------------
-st.header("4. Wing Sizing")
+st.header("5. Wing Sizing")
 wingspan_total = math.sqrt(ar * s_req)
 
 col_w1, col_w2 = st.columns(2)
@@ -1671,7 +1746,9 @@ with col_w1:
         c_tip = lambda_val * c_root
         mac = (2.0 / 3.0) * c_root * ((1.0 + lambda_val + lambda_val**2) / (1.0 + lambda_val))
 
-    x_le_wing = st.number_input("Wing Leading Edge Location from Nose X_LE (mm)", step=10.0, key="x_le_wing")
+    x_le_wing = st.number_input(
+        "Wing Leading Edge Location from Nose X_LE (mm)", step=10.0, key="x_le_wing"
+    )
     x_ac_wing = x_le_wing + (0.25 * mac * 1000.0)
 
     st.markdown("---")
@@ -1699,15 +1776,18 @@ with col_w2:
         )
 
 # -------------------------------------------------------------
-# STAGE 5: AIRFOIL TRANSLATION
+# STAGE 6: AIRFOIL TRANSLATION
 # -------------------------------------------------------------
-st.header("5. Airfoil 2D Lift Requirements")
+st.header("6. Airfoil 2D Lift Requirements")
 cl_3d_cruise = (2.0 * target_mtow * g) / (rho * (v_cruise**2) * s_req)
-# Safe guard against denominator <= 0 for extreme low-AR cases
-denom_cruise = max(0.1, 1.0 - (cl_3d_cruise / (math.pi * ar * e0)))
-denom_stall = max(0.1, 1.0 - (cl_max_est / (math.pi * ar * e0)))
-cl_2d_cruise = cl_3d_cruise / denom_cruise
-cl_2d_stall = cl_max_est / denom_stall
+
+# Finite-wing 3D-to-2D lift-curve slope correction: a_3D = a_2D / (1 + a_2D / (pi * AR * e0))
+# Using thin-airfoil a_2D ≈ 2*pi, the ratio Cl_2D / CL_3D at a given effective AoA is (1 + 2 / (AR * e0))
+slope_correction = 1.0 + (2.0 / (ar * e0))
+cl_2d_cruise = cl_3d_cruise * slope_correction
+
+# Spanwise stall progression typically limits 3D CL_max to ~0.90 of 2D airfoil Cl_max
+cl_2d_stall = cl_max_est / 0.90
 
 af1, af2, af3 = st.columns(3)
 af1.metric("Target 3D Cruise CL", f"{cl_3d_cruise:.3f}")
@@ -1715,9 +1795,9 @@ af2.metric("Target 2D Airfoil Cl (Cruise)", f"{cl_2d_cruise:.3f}")
 af3.metric("Target 2D Airfoil Cl_max", f"{cl_2d_stall:.3f}")
 
 # -------------------------------------------------------------
-# STAGE 6: EMPENNAGE SIZING & TAIL GEOMETRY
+# STAGE 7: EMPENNAGE SIZING & TAIL GEOMETRY
 # -------------------------------------------------------------
-st.header("6. Empennage Sizing & Detailed Geometry")
+st.header("7. Empennage Sizing & Detailed Geometry")
 tl1, tl2 = st.columns(2)
 
 # ==========================================
@@ -1739,10 +1819,11 @@ with tl1:
 
     if "ar_h" not in st.session_state:
         st.session_state.ar_h = 4.5
-    # Always keep b_h consistent if s_h changes upstream, clamped to slider bounds
-    st.session_state.b_h = float(
-        np.clip(round(math.sqrt(st.session_state.ar_h * s_h), 3), 0.30, 2.00)
-    )
+    if "b_h" not in st.session_state or abs(st.session_state.get("prev_s_h", 0.0) - s_h) > 1e-4:
+        st.session_state.b_h = float(
+            np.clip(round(math.sqrt(st.session_state.ar_h * s_h), 3), 0.30, 2.00)
+        )
+        st.session_state.prev_s_h = s_h
 
     def sync_ht_from_ar():
         st.session_state.b_h = float(
@@ -1751,7 +1832,7 @@ with tl1:
 
     def sync_ht_from_b():
         st.session_state.ar_h = float(
-            np.clip(round((st.session_state.b_h**2) / s_h, 2), 2.0, 8.0)
+            np.clip(round((st.session_state.b_h**2) / max(s_h, 1e-4), 2), 2.0, 8.0)
         )
 
     col_ar_h, col_b_h = st.columns(2)
@@ -1804,9 +1885,11 @@ with tl2:
 
     if "ar_v" not in st.session_state:
         st.session_state.ar_v = 1.8
-    st.session_state.b_v = float(
-        np.clip(round(math.sqrt(st.session_state.ar_v * s_v), 3), 0.15, 1.20)
-    )
+    if "b_v" not in st.session_state or abs(st.session_state.get("prev_s_v", 0.0) - s_v) > 1e-4:
+        st.session_state.b_v = float(
+            np.clip(round(math.sqrt(st.session_state.ar_v * s_v), 3), 0.15, 1.20)
+        )
+        st.session_state.prev_s_v = s_v
 
     def sync_vt_from_ar():
         st.session_state.b_v = float(
@@ -1815,7 +1898,7 @@ with tl2:
 
     def sync_vt_from_b():
         st.session_state.ar_v = float(
-            np.clip(round((st.session_state.b_v**2) / s_v, 2), 0.8, 4.0)
+            np.clip(round((st.session_state.b_v**2) / max(s_v, 1e-4), 2), 0.8, 4.0)
         )
 
     col_ar_v, col_b_v = st.columns(2)
@@ -1844,7 +1927,6 @@ with tl2:
 st.markdown("---")
 st.subheader("Longitudinal Static Stability Analysis")
 
-st.header("Statik Stabilite Marj Sınırları")
 sm_range = st.slider(
     "Allowable Static Margin Range (% MAC)",
     min_value=-5.0,
@@ -1871,7 +1953,9 @@ true_static_margin = ((x_np - x_cg_mm) / mac_mm) * 100.0
 
 np_col1, np_col2, np_col3 = st.columns(3)
 np_col1.metric("Wing Aerodynamic Center (X_AC)", f"{x_ac_wing:.1f} mm")
-np_col2.metric("Aircraft Neutral Point (X_NP)", f"{x_np:.1f} mm", delta=f"+{delta_x_np_mm:.1f} mm aft shift")
+np_col2.metric(
+    "Aircraft Neutral Point (X_NP)", f"{x_np:.1f} mm", delta=f"+{delta_x_np_mm:.1f} mm aft shift"
+)
 np_col3.metric("Static Margin (SM)", f"{true_static_margin:.1f} % MAC")
 
 if true_static_margin < sm_min:
@@ -1886,17 +1970,24 @@ else:
     st.success("Statik stabilite belirlenen sınırlar içerisinde.")
 
 # -------------------------------------------------------------
-# STAGE 7: DRAG BUILDUP VERIFICATION & BREAKDOWN
+# STAGE 8: DRAG BUILDUP VERIFICATION & BREAKDOWN
 # -------------------------------------------------------------
-st.header("7. Drag Buildup Verification")
+st.header("8. Drag Buildup Verification")
 dg1, dg2 = st.columns(2)
 
 with dg1:
     st.subheader("Geometry & Friction Inputs")
     fuse_len = st.number_input("Fuselage Length (m)", min_value=0.1, value=0.90, step=0.05)
-    fuse_dia = st.number_input("Fuselage Equivalent Diameter (m)", min_value=0.01, value=0.12, step=0.01)
+    fuse_dia = st.number_input(
+        "Fuselage Equivalent Diameter (m)", min_value=0.01, value=0.12, step=0.01
+    )
     cf_fuse = st.number_input("Skin Friction Cf", min_value=0.0001, value=0.005, format="%.4f")
-    cd_wing_emp = st.number_input("Wing & Tail Profile Drag", min_value=0.001, value=0.012, format="%.4f")
+    cd_wing_emp = st.number_input(
+        "Wing & Tail Profile Drag (referenced to S_wing)",
+        min_value=0.001,
+        value=0.012,
+        format="%.4f",
+    )
 
     st.markdown("**Landing Gear Frontal Areas (m²)**")
 
@@ -1948,7 +2039,9 @@ with dg2:
     )
 
     if abs(total_recalc_cd0 - st.session_state.cd0_active) > 0.003:
-        st.warning(f"Drag mismatch: Initial {st.session_state.cd0_active:.4f} vs Buildup {total_recalc_cd0:.4f}")
+        st.warning(
+            f"Drag mismatch: Initial {st.session_state.cd0_active:.4f} vs Buildup {total_recalc_cd0:.4f}"
+        )
     else:
         st.success("Drag assumption aligns with geometry.")
 
