@@ -6,7 +6,8 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-
+import xml.etree.ElementTree as ET
+from xml.dom import minidom
 
 # -------------------------------------------------------------
 # HELPER FUNCTIONS FOR PARSING
@@ -1923,6 +1924,155 @@ with tl2:
     vt_m2.metric("Height (b_V)", f"{b_v * 100:.1f} cm")
     vt_m3.metric("Root Chord", f"{c_root_v * 100:.1f} cm")
     vt_m4.metric("MAC (c_V)", f"{mac_v * 100:.1f} cm")
+
+st.header("8. Flow5 Export")
+st.markdown("Generate XML definitions for Flow5 geometry and mass/inertia modeling.")
+
+def prettify_xml(elem):
+    """Return a pretty-printed XML string for the Element."""
+    rough_string = ET.tostring(elem, 'utf-8')
+    reparsed = minidom.parseString(rough_string)
+    return reparsed.toprettyxml(indent="    ")
+
+def generate_flow5_plane_xml():
+    """Generates the geometry XML for the Plane, Wing, HT, and VT."""
+    explane = ET.Element("explane", version="1.0")
+    plane = ET.SubElement(explane, "Plane")
+    ET.SubElement(plane, "Name").text = "Streamlit_Generated_UAV"
+    
+    # 1. Main Wing
+    wing = ET.SubElement(plane, "wing")
+    ET.SubElement(wing, "Name").text = "Main_Wing"
+    sections = ET.SubElement(wing, "Sections")
+    
+    x_le_wing_m = x_le_wing / 1000.0
+    
+    # Root Section
+    sec_root = ET.SubElement(sections, "Section")
+    ET.SubElement(sec_root, "y_position").text = "0.0"
+    ET.SubElement(sec_root, "chord").text = f"{c_root:.4f}"
+    ET.SubElement(sec_root, "x_offset").text = f"{x_le_wing_m:.4f}"
+    ET.SubElement(sec_root, "z_offset").text = "0.0"
+    
+    # Tip Section
+    sec_tip = ET.SubElement(sections, "Section")
+    ET.SubElement(sec_tip, "y_position").text = f"{wingspan_total / 2.0:.4f}"
+    ET.SubElement(sec_tip, "chord").text = f"{c_tip:.4f}"
+    # Assuming straight leading edge for simplicity. Adjust x_offset if swept.
+    ET.SubElement(sec_tip, "x_offset").text = f"{x_le_wing_m:.4f}" 
+    ET.SubElement(sec_tip, "z_offset").text = "0.0"
+
+    # 2. Horizontal Tail
+    ht = ET.SubElement(plane, "wing")
+    ET.SubElement(ht, "Name").text = "Horizontal_Tail"
+    ht_sections = ET.SubElement(ht, "Sections")
+    
+    # Calculate HT Leading Edge position in meters
+    x_le_ht_m = (x_ac_wing / 1000.0) + l_h - (0.25 * c_root_h)
+    
+    ht_root = ET.SubElement(ht_sections, "Section")
+    ET.SubElement(ht_root, "y_position").text = "0.0"
+    ET.SubElement(ht_root, "chord").text = f"{c_root_h:.4f}"
+    ET.SubElement(ht_root, "x_offset").text = f"{x_le_ht_m:.4f}"
+    ET.SubElement(ht_root, "z_offset").text = "0.0"
+    
+    ht_tip = ET.SubElement(ht_sections, "Section")
+    ET.SubElement(ht_tip, "y_position").text = f"{b_h / 2.0:.4f}"
+    ET.SubElement(ht_tip, "chord").text = f"{c_tip_h:.4f}"
+    ET.SubElement(ht_tip, "x_offset").text = f"{x_le_ht_m:.4f}"
+    ET.SubElement(ht_tip, "z_offset").text = "0.0"
+
+    # 3. Vertical Tail (Fin)
+    vt = ET.SubElement(plane, "wing")
+    ET.SubElement(vt, "Name").text = "Vertical_Tail"
+    vt_sections = ET.SubElement(vt, "Sections")
+    
+    # Calculate VT Leading Edge position in meters
+    x_le_vt_m = (x_ac_wing / 1000.0) + l_v - (0.25 * c_root_v)
+    
+    # Flow5/XFLR5 generally maps fin height to y_position + dihedral=90
+    vt_root = ET.SubElement(vt_sections, "Section")
+    ET.SubElement(vt_root, "y_position").text = "0.0"
+    ET.SubElement(vt_root, "chord").text = f"{c_root_v:.4f}"
+    ET.SubElement(vt_root, "x_offset").text = f"{x_le_vt_m:.4f}"
+    ET.SubElement(vt_root, "dihedral").text = "90.0"
+    
+    vt_tip = ET.SubElement(vt_sections, "Section")
+    ET.SubElement(vt_tip, "y_position").text = f"{b_v:.4f}"
+    ET.SubElement(vt_tip, "chord").text = f"{c_tip_v:.4f}"
+    ET.SubElement(vt_tip, "x_offset").text = f"{x_le_vt_m:.4f}"
+    ET.SubElement(vt_tip, "dihedral").text = "90.0"
+
+    return prettify_xml(explane)
+
+def generate_flow5_masses_xml(df):
+    """Generates the XML block for Point Masses based on the live DataFrame."""
+    inertia = ET.Element("Inertia")
+    
+    # Ensure columns exist to prevent KeyError
+    for col in ["X (mm)", "Y (mm)", "Z (mm)"]:
+        if col not in df.columns:
+            df[col] = 0.0
+            
+    df = df.fillna(0) # Handle empty coordinates safely
+    
+    for idx, row in df.iterrows():
+        try:
+            item_name = str(row.get("Ürün", f"Item_{idx}"))
+            mass_kg = float(row.get("Ağırlık(gr)", 0.0)) / 1000.0
+            
+            # Skip 0kg items to keep XML clean
+            if mass_kg <= 0.0:
+                continue
+                
+            x_m = float(row.get("X (mm)", 0.0)) / 1000.0
+            y_m = float(row.get("Y (mm)", 0.0)) / 1000.0
+            z_m = float(row.get("Z (mm)", 0.0)) / 1000.0
+            
+            point_mass = ET.SubElement(inertia, "Point_Mass")
+            ET.SubElement(point_mass, "name").text = item_name
+            ET.SubElement(point_mass, "mass").text = f"{mass_kg:.5f}"
+            ET.SubElement(point_mass, "x").text = f"{x_m:.5f}"
+            ET.SubElement(point_mass, "y").text = f"{y_m:.5f}"
+            ET.SubElement(point_mass, "z").text = f"{z_m:.5f}"
+        except Exception as e:
+            st.error(f"Error parsing mass item {idx}: {e}")
+            
+    return prettify_xml(inertia)
+
+# Layout for the download buttons
+col_export1, col_export2 = st.columns(2)
+
+with col_export1:
+    st.subheader("Geometry Export")
+    try:
+        plane_xml_data = generate_flow5_plane_xml()
+        st.download_button(
+            label="💾 Download Flow5 Plane Geometry (.xml)",
+            data=plane_xml_data,
+            file_name="UAV_Geometry.xml",
+            mime="application/xml",
+            help="Generates an XML file with Wing, Horizontal Tail, and Vertical Tail definitions."
+        )
+    except Exception as e:
+        st.error(f"Could not generate geometry XML: {e}")
+
+with col_export2:
+    st.subheader("Point Mass / Inertia Export")
+    if use_live_sheet and 'df_mass' in locals() and not df_mass.empty:
+        try:
+            mass_xml_data = generate_flow5_masses_xml(df_mass)
+            st.download_button(
+                label="📦 Download Flow5 Point Masses (.xml)",
+                data=mass_xml_data,
+                file_name="UAV_PointMasses.xml",
+                mime="application/xml",
+                help="Generates an <Inertia> XML block populated directly from your Google Sheets mass buildup."
+            )
+        except Exception as e:
+            st.error(f"Could not generate mass XML: {e}")
+    else:
+        st.info("Live Mass Sheet is empty or not loaded. Point Mass generation is disabled.")
 
 st.markdown("---")
 st.subheader("Longitudinal Static Stability Analysis")
